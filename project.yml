@@ -1,0 +1,62 @@
+name: CodingProfessionalAgent
+options:
+    bundleIdPrefix: com.luispater
+    developmentLanguage: zh-Hans
+    createIntermediateGroups: true
+    deploymentTarget:
+        iOS: "26.0"
+settings:
+    base:
+        SWIFT_VERSION: "6.0"
+        MARKETING_VERSION: "1.0.0"
+        CURRENT_PROJECT_VERSION: "1"
+targets:
+    CodingProfessionalAgent:
+        type: application
+        platform: iOS
+        sources:
+            - CodingProfessionalAgent
+        info:
+            path: CodingProfessionalAgent/Resources/Info.plist
+            properties:
+                CFBundleShortVersionString: $(MARKETING_VERSION)
+                CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+                # The desktop Web server is plain HTTP on user-provided hosts.
+                NSAppTransportSecurity:
+                    NSAllowsArbitraryLoads: true
+        settings:
+            base:
+                PRODUCT_BUNDLE_IDENTIFIER: me.router-for.CodingProfessionalAgent
+                TARGETED_DEVICE_FAMILY: "1"
+                GENERATE_INFOPLIST_FILE: YES
+                INFOPLIST_KEY_CFBundleDisplayName: CPA
+                INFOPLIST_KEY_UILaunchScreen_Generation: YES
+                INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+                INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: UIInterfaceOrientationPortrait
+                INFOPLIST_KEY_NSLocalNetworkUsageDescription: 用于连接局域网中的 CPA 桌面版。
+                INFOPLIST_KEY_NSCameraUsageDescription: 用于拍摄照片并作为附件发送给 CPA。
+                ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+                CODE_SIGN_STYLE: Automatic
+                DEVELOPMENT_TEAM: QGB5U2U29X
+    CodingProfessionalAgentTests:
+        type: bundle.unit-test
+        platform: iOS
+        sources:
+            - CodingProfessionalAgentTests
+        dependencies:
+            - target: CodingProfessionalAgent
+        settings:
+            base:
+                PRODUCT_BUNDLE_IDENTIFIER: me.router-for.CodingProfessionalAgentTests
+                GENERATE_INFOPLIST_FILE: YES
+                TEST_HOST: "$(BUILT_PRODUCTS_DIR)/CodingProfessionalAgent.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/CodingProfessionalAgent"
+                BUNDLE_LOADER: "$(TEST_HOST)"
+schemes:
+    CodingProfessionalAgent:
+        build:
+            targets:
+                CodingProfessionalAgent: all
+                CodingProfessionalAgentTests: [test]
+        test:
+            targets:
+                - CodingProfessionalAgentTests
