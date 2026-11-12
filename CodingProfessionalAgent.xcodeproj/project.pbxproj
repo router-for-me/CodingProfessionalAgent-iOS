@@ -46,6 +46,7 @@
 		E30FB1ECDB755A9A4F03E928 /* EntryViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = C01309C64A2120FE608E1879 /* EntryViews.swift */; };
 		EB397FEDC903A30E898B9BB0 /* TurnViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3459E385D02913A5FBE78A29 /* TurnViews.swift */; };
 		EBCEEB647BF1434E771F4835 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E6D2A31681481EBD5EA28B1 /* Models.swift */; };
+		EE2CCA9C4933CDBC63DEEC96 /* ThemeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 745F97A876F0F97B9CFD07DC /* ThemeTests.swift */; };
 		F1BF11427A31E93FE04F0DCA /* CodingProfessionalAgentApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 71ACFFCF779AAF0B3B550AAF /* CodingProfessionalAgentApp.swift */; };
 		FE831501DAE3461131840796 /* ChatSearch.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE72867FF1F9F153A2A0E027 /* ChatSearch.swift */; };
 /* End PBXBuildFile section */
@@ -76,6 +77,7 @@
 		6E6D2A31681481EBD5EA28B1 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		7080C35A7F0BD2AC5C77696E /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		71ACFFCF779AAF0B3B550AAF /* CodingProfessionalAgentApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodingProfessionalAgentApp.swift; sourceTree = "<group>"; };
+		745F97A876F0F97B9CFD07DC /* ThemeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThemeTests.swift; sourceTree = "<group>"; };
 		75416F2181049FC6F7F9DF00 /* MarkdownView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownView.swift; sourceTree = "<group>"; };
 		7B94BFF18924FD3C5FCDEDF1 /* TunnelClientIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TunnelClientIntegrationTests.swift; sourceTree = "<group>"; };
 		7E06AACB80C0B1411AE62F37 /* ChatTurns.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatTurns.swift; sourceTree = "<group>"; };
@@ -252,6 +254,7 @@
 			children = (
 				88DCA0757D0FF598646E4A91 /* DesktopConnectionTests.swift */,
 				AA3B67BFFEC02B0DBBA335F3 /* NavigationLayoutTests.swift */,
+				745F97A876F0F97B9CFD07DC /* ThemeTests.swift */,
 				7B94BFF18924FD3C5FCDEDF1 /* TunnelClientIntegrationTests.swift */,
 				820DFE1EF070B7D735E30564 /* TunnelProtocolTests.swift */,
 			);
@@ -362,6 +365,7 @@
 			files = (
 				50834BE5698E813FEF8F5C23 /* DesktopConnectionTests.swift in Sources */,
 				A0F0AE8941A0F0A0FB42E384 /* NavigationLayoutTests.swift in Sources */,
+				EE2CCA9C4933CDBC63DEEC96 /* ThemeTests.swift in Sources */,
 				3E181DC075DE07805E4ED817 /* TunnelClientIntegrationTests.swift in Sources */,
 				984DE0307E3625899BD89BC2 /* TunnelProtocolTests.swift in Sources */,
 			);
