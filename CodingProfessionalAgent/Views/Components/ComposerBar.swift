@@ -28,6 +28,8 @@ struct ComposerBar: View {
                 isFocused: $isFocused,
                 maxLines: 5,
                 returnKeyType: .send,
+                // Keep visible padding inside the native editor so blank space accepts touches.
+                textContainerInset: .init(top: 12, left: 6, bottom: 12, right: 0),
                 skillTrigger: skillTrigger
             ) {
                 // Like the desktop, return picks the highlighted suggestion while a menu is open.
@@ -38,9 +40,11 @@ struct ComposerBar: View {
                 }
                 return true
             }
-            .composerPlaceholder(placeholder, isShown: draft.text.isEmpty)
-            .padding(.leading, 6)
-            .padding(.vertical, 12)
+            .composerPlaceholder(
+                placeholder,
+                isShown: draft.text.isEmpty,
+                inset: .init(top: 12, leading: 6, bottom: 12, trailing: 0)
+            )
             ComposerActionButton(
                 hasContent: hasText,
                 isRunning: isRunning,
@@ -168,13 +172,14 @@ struct ExpandedComposer: View {
 }
 
 private extension View {
-    func composerPlaceholder(_ placeholder: String, isShown: Bool) -> some View {
+    func composerPlaceholder(_ placeholder: String, isShown: Bool, inset: EdgeInsets = EdgeInsets()) -> some View {
         overlay(alignment: .topLeading) {
             if isShown {
                 Text(placeholder)
                     .font(.system(size: 17))
                     .foregroundStyle(Color(.placeholderText))
                     .lineLimit(1)
+                    .padding(inset)
                     .allowsHitTesting(false)
             }
         }

@@ -14,6 +14,7 @@ struct ComposerTextView: UIViewRepresentable {
     @Binding var isFocused: Bool
     var maxLines: Int
     var returnKeyType: UIReturnKeyType = .default
+    var textContainerInset: UIEdgeInsets = .zero
     var skillTrigger = SkillTrigger.dollar
     // Called for the return key; returning true consumes it instead of inserting a newline.
     var onReturn: () -> Bool = { false }
@@ -29,7 +30,7 @@ struct ComposerTextView: UIViewRepresentable {
         view.font = Self.font
         view.textColor = .label
         view.tintColor = UIColor(Theme.accent)
-        view.textContainerInset = .zero
+        view.textContainerInset = textContainerInset
         view.textContainer.lineFragmentPadding = 0
         view.showsVerticalScrollIndicator = false
         // Pasted content is always plain text.
@@ -45,6 +46,9 @@ struct ComposerTextView: UIViewRepresentable {
     func updateUIView(_ view: ChipTextView, context: Context) {
         context.coordinator.parent = self
         view.skillTrigger = skillTrigger
+        if view.textContainerInset != textContainerInset {
+            view.textContainerInset = textContainerInset
+        }
         if view.returnKeyType != returnKeyType {
             view.returnKeyType = returnKeyType
             view.reloadInputViews()
@@ -73,7 +77,8 @@ struct ComposerTextView: UIViewRepresentable {
         guard let width = proposal.width, width.isFinite, width > 0 else { return nil }
         let lineHeight = ceil(Self.font.lineHeight)
         let fitting = ceil(uiView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height)
-        let height = min(max(fitting, lineHeight), lineHeight * CGFloat(maxLines))
+        let verticalInset = textContainerInset.top + textContainerInset.bottom
+        let height = min(max(fitting, lineHeight + verticalInset), lineHeight * CGFloat(maxLines) + verticalInset)
         return CGSize(width: width, height: height)
     }
 
