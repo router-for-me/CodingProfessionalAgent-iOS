@@ -9,9 +9,12 @@
 /* Begin PBXBuildFile section */
 		05982CA0BF5773A85D6E9D22 /* AskSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F9F3ED4F46F5EACCD2612E6 /* AskSheet.swift */; };
 		0749BB7C01DF446BC8273702 /* ComposerAttachments.swift in Sources */ = {isa = PBXBuildFile; fileRef = A33DA07486DBDCC42F067FF8 /* ComposerAttachments.swift */; };
+		074A5FF986985333E5CE3F61 /* CodeHighlighter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3101F775E11145AD8F3C1B95 /* CodeHighlighter.swift */; };
+		13E1EBE9E610827DECA94F21 /* SessionPanels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C416313682FF301DB662E74 /* SessionPanels.swift */; };
 		147F5555000393BE9474DE72 /* TunnelProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8879593C5ABE68378892027 /* TunnelProtocol.swift */; };
 		157C15428C483BB35F2D7B57 /* DirectoryBrowserView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2004F2D8BE238E2F0B222AD /* DirectoryBrowserView.swift */; };
 		177ED78066E1AF390C87BB0E /* ConnectionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C58DFD977B3936C8F273DE37 /* ConnectionStore.swift */; };
+		1B8A9D303AF3FA7CA42CBA02 /* GitDiff.swift in Sources */ = {isa = PBXBuildFile; fileRef = 010AA944AC3D22B60E523E94 /* GitDiff.swift */; };
 		206C3F61B3B01AC9B3AED8C7 /* ComposerBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C1F8A2ED9322316EC54A6FE /* ComposerBar.swift */; };
 		39C07785E1C96E54541D4CD9 /* WorktreeForkSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2033A26337037B2915B70AF5 /* WorktreeForkSheet.swift */; };
 		3E181DC075DE07805E4ED817 /* TunnelClientIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B94BFF18924FD3C5FCDEDF1 /* TunnelClientIntegrationTests.swift */; };
@@ -63,11 +66,14 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		010AA944AC3D22B60E523E94 /* GitDiff.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitDiff.swift; sourceTree = "<group>"; };
 		1C1F8A2ED9322316EC54A6FE /* ComposerBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerBar.swift; sourceTree = "<group>"; };
 		2033A26337037B2915B70AF5 /* WorktreeForkSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorktreeForkSheet.swift; sourceTree = "<group>"; };
 		229C161407DE6C5768523407 /* SubAgentViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SubAgentViews.swift; sourceTree = "<group>"; };
 		22DD5E142143373926040465 /* ChatSearchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatSearchView.swift; sourceTree = "<group>"; };
 		2977B218DE5238B0C840A1F8 /* TunnelClientManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TunnelClientManager.swift; sourceTree = "<group>"; };
+		2C416313682FF301DB662E74 /* SessionPanels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionPanels.swift; sourceTree = "<group>"; };
+		3101F775E11145AD8F3C1B95 /* CodeHighlighter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodeHighlighter.swift; sourceTree = "<group>"; };
 		3459E385D02913A5FBE78A29 /* TurnViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TurnViews.swift; sourceTree = "<group>"; };
 		47EEB575787056D9C7436E68 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		4FE896480E2BD17C6D4D5C9C /* CodingProfessionalAgentTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = CodingProfessionalAgentTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -131,6 +137,7 @@
 				7E06AACB80C0B1411AE62F37 /* ChatTurns.swift */,
 				C01309C64A2120FE608E1879 /* EntryViews.swift */,
 				75416F2181049FC6F7F9DF00 /* MarkdownView.swift */,
+				2C416313682FF301DB662E74 /* SessionPanels.swift */,
 				229C161407DE6C5768523407 /* SubAgentViews.swift */,
 				7F7D42BD4AF86F893A938EAE /* ThreadModel.swift */,
 				FCB350C2C626C5CAC5650354 /* ThreadView.swift */,
@@ -142,8 +149,10 @@
 		516C4F5CE0CC223285CD2DEB /* Services */ = {
 			isa = PBXGroup;
 			children = (
+				3101F775E11145AD8F3C1B95 /* CodeHighlighter.swift */,
 				C58DFD977B3936C8F273DE37 /* ConnectionStore.swift */,
 				C8AADBCE379D5651DB1F639C /* DesktopClient.swift */,
+				010AA944AC3D22B60E523E94 /* GitDiff.swift */,
 				D121D2B6744438DD103CC9B3 /* KeychainStore.swift */,
 				2977B218DE5238B0C840A1F8 /* TunnelClientManager.swift */,
 				A8879593C5ABE68378892027 /* TunnelProtocol.swift */,
@@ -384,6 +393,7 @@
 				FE831501DAE3461131840796 /* ChatSearch.swift in Sources */,
 				44B406D0187F367260FAF5EC /* ChatSearchView.swift in Sources */,
 				74F53D88D4D1E6B61824D3F3 /* ChatTurns.swift in Sources */,
+				074A5FF986985333E5CE3F61 /* CodeHighlighter.swift in Sources */,
 				F1BF11427A31E93FE04F0DCA /* CodingProfessionalAgentApp.swift in Sources */,
 				0749BB7C01DF446BC8273702 /* ComposerAttachments.swift in Sources */,
 				206C3F61B3B01AC9B3AED8C7 /* ComposerBar.swift in Sources */,
@@ -395,6 +405,7 @@
 				A30407493DC85312CD0EF03B /* DesktopClient.swift in Sources */,
 				157C15428C483BB35F2D7B57 /* DirectoryBrowserView.swift in Sources */,
 				E30FB1ECDB755A9A4F03E928 /* EntryViews.swift in Sources */,
+				1B8A9D303AF3FA7CA42CBA02 /* GitDiff.swift in Sources */,
 				748F79FBFD779D89FFA61B22 /* HomeView.swift in Sources */,
 				E263818B09DF6D63650AB28E /* JSONValue.swift in Sources */,
 				8C6E34259008F26D8A7A39C4 /* KeychainStore.swift in Sources */,
@@ -405,6 +416,7 @@
 				49004B16F38526A9FE08A12B /* ReasoningSlider.swift in Sources */,
 				71507761A577B8E30FF81D17 /* RemoteModels.swift in Sources */,
 				B4B06B4B2675F56E8B55323F /* Router.swift in Sources */,
+				13E1EBE9E610827DECA94F21 /* SessionPanels.swift in Sources */,
 				D858A875AAE65D2A1300C262 /* SettingsView.swift in Sources */,
 				571A1B2160DC6E39001652D9 /* SubAgentViews.swift in Sources */,
 				D0F16CFA85D698675A7BB399 /* Theme.swift in Sources */,

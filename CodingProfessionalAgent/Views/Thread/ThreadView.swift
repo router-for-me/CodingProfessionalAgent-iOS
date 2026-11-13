@@ -39,6 +39,7 @@ private struct ThreadContent: View {
     @State private var errorMessage: String?
     @State private var notice: String?
     @State private var showsAsk = false
+    @State private var panelTab: SessionPanelTab?
     @State private var showsRename = false
     @State private var renameText = ""
     // Selection edited in the model sheet; applied to the conversation when the sheet closes.
@@ -362,6 +363,9 @@ private struct ThreadContent: View {
                 )
             }
         }
+        .sheet(item: $panelTab) { tab in
+            SessionPanelSheet(client: client, session: model.session, initialTab: tab)
+        }
         .alert("重命名对话", isPresented: $showsRename) {
             TextField("标题", text: $renameText)
             Button("取消", role: .cancel) {}
@@ -492,10 +496,10 @@ private struct ThreadContent: View {
                 }
                 Section {
                     Button("更改", systemImage: "arrow.triangle.branch") {
-                        notice = "即将推出"
+                        panelTab = .changes
                     }
                     Button("文件", systemImage: "folder") {
-                        notice = "即将推出"
+                        panelTab = .files
                     }
                 }
             } label: {

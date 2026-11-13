@@ -1352,6 +1352,65 @@ final class DesktopClient: Identifiable {
         return homeDir
     }
 
+    // Entries of a desktop folder (files and folders); symbolic links are skipped like the
+    // desktop's browser. Names are sorted with folders first (desktop FileManager order).
+    func directoryEntries(of path: String) async throws -> [(name: String, isDir: Bool)] {
+        let value = try await call("native:readDir", [.string(path)], timeout: 15)
+        guard let entries = value.arrayValue else {
+            throw DesktopClientError.remote("文件夹不存在")
+        }
+        return entries
+            .compactMap { entry -> (name: String, isDir: Bool)? in
+                guard entry["isSymbolicLink"]?.boolValue != true,
+                      let name = entry["name"]?.stringValue
+                else {
+                    return nil
+                }
+                return (name, entry["isDir"]?.boolValue == true)
+            }
+            .sorted { lhs, rhs in
+                if lhs.isDir != rhs.isDir {
+                    return lhs.isDir
+                }
+                return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+            }
+    }
+
+    // Reads a text file on the desktop (desktop `native:readFile`); fails for missing files.
+    func readFile(at path: String) async throws -> String {
+        let value = try await call("native:readFile", [.string(path)], timeout: 30)
+        guard let encoded = value["dataBase64"]?.stringValue,
+              let data = Data(base64Encoded: encoded)
+        else {
+            throw DesktopClientError.remote("无法读取文件")
+        }
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    // Runs a git command in a desktop folder (desktop `services.process.run` used by the
+    // review panel); stdout is decoded as UTF-8. Non-zero exits return nil, like the desktop
+    // helper that falls back or reports "not a git repo".
+    func runGit(_ args: [String], cwd: String) async -> (exitCode: Int, stdout: String)? {
+        let request: JSONValue = [
+            "operationId": .string("ios-git-\(UUID().uuidString)"),
+            "executable": "git",
+            "args": .array(args.map { .string($0) }),
+            "cwd": .string(cwd),
+            "env": nil,
+        ]
+        guard let result = try? await call("native:runProcess", [request], timeout: 30),
+              let exitCode = result["exitCode"]?.doubleValue
+        else {
+            return nil
+        }
+        var stdout = ""
+        if let encoded = result["stdoutBase64"]?.stringValue,
+           let data = Data(base64Encoded: encoded) {
+            stdout = String(decoding: data, as: UTF8.self)
+        }
+        return (Int(exitCode), stdout)
+    }
+
     // Sub-folder names of a desktop folder; symbolic links are skipped like the desktop's browser.
     func subdirectories(of path: String) async throws -> [String] {
         let value = try await call("native:readDir", [.string(path)], timeout: 15)
