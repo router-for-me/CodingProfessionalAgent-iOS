@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct ThreadView: View {
     @Environment(ConnectionStore.self) private var store
@@ -474,15 +475,28 @@ private struct ThreadContent: View {
                 Image(systemName: "square.and.pencil")
             }
             Menu {
+                let pinned = model.session?.pinned ?? false
+                Button(pinned ? "取消置顶" : "置顶", systemImage: pinned ? "pin.slash" : "pin") {
+                    togglePinned()
+                }
                 Button("重命名", systemImage: "pencil") {
                     renameText = model.session?.title ?? ""
                     showsRename = true
                 }
-                Button("归档", systemImage: "archivebox") {
+                Button("复制对话串 ID", systemImage: "doc.on.doc") {
+                    UIPasteboard.general.string = model.sessionId
+                    notice = "已复制到剪贴板"
+                }
+                Button("归档", systemImage: "archivebox", role: .destructive) {
                     archive()
                 }
-                Button("刷新", systemImage: "arrow.clockwise") {
-                    model.refresh()
+                Section {
+                    Button("更改", systemImage: "arrow.triangle.branch") {
+                        notice = "即将推出"
+                    }
+                    Button("文件", systemImage: "folder") {
+                        notice = "即将推出"
+                    }
                 }
             } label: {
                 Image(systemName: "ellipsis")
@@ -747,6 +761,17 @@ private struct ThreadContent: View {
             guard model.canResume else { return }
             do {
                 try await model.resume()
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private func togglePinned() {
+        let pinned = !(model.session?.pinned ?? false)
+        Task {
+            do {
+                try await client.setSessionPinned(id: model.sessionId, pinned: pinned)
             } catch {
                 errorMessage = error.localizedDescription
             }
