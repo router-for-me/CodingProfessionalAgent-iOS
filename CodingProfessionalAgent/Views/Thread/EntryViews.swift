@@ -389,10 +389,11 @@ private enum SentImagePreviewFiles {
     }
 }
 
-// Copy / feedback / fork actions with the message timestamp.
+// Copy / fork actions with the message timestamp, like the desktop's assistant message actions.
 struct MessageActions: View {
     let text: String
     let createdAt: Double
+    var onFork: (() -> Void)? = nil
 
     private static let formatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -406,14 +407,8 @@ struct MessageActions: View {
             actionButton("square.on.square") {
                 UIPasteboard.general.string = text
             }
-            actionButton("hand.thumbsup") {
-                // TODO: Send positive feedback.
-            }
-            actionButton("hand.thumbsdown") {
-                // TODO: Send negative feedback.
-            }
-            actionButton("arrow.triangle.branch", rotation: 90) {
-                // TODO: Fork the conversation from this message.
+            if let onFork {
+                actionButton("arrow.triangle.branch", rotation: 90, action: onFork)
             }
             if createdAt > 0 {
                 Text(Self.formatter.string(from: Date(timeIntervalSince1970: createdAt / 1000)))

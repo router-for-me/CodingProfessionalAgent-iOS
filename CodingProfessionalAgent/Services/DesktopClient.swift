@@ -1189,16 +1189,40 @@ final class DesktopClient: Identifiable {
 
     // Copies a conversation into a new one (desktop `forkSession`). With `worktree`, the copy works in
     // a new git worktree that the desktop creates from that branch before the copy's next turn runs.
-    func forkSession(id sessionId: String, worktree: WorktreeFork? = nil) async throws -> String {
-        guard let source = session(id: sessionId) else {
-            throw DesktopClientError.remote("对话不存在")
-        }
+    // With `atEntryId`, the copy holds only the entries up to that message and its trailing tool
+    // results, like the desktop's fork from a message.
+    func forkSession(id sessionId: String, atEntryId: String? = nil, worktree: WorktreeFork? = nil) async throws -> String {
         let snapshot = try await call("session:get", [.string(sessionId)])
         guard let sourceEntries = snapshot["entries"]?.arrayValue else {
             throw DesktopClientError.remote("无法读取对话内容")
         }
+        // A sub-agent conversation is not in the session list (desktop `listSessions` filters
+        // `is_subagent = 0`), and `session:get` does not return its project, branch or title either;
+        // forking it without the desktop's `getMeta` RPC would silently drop that context, so it is
+        // refused instead.
+        guard let source = session(id: sessionId) else {
+            throw DesktopClientError.remote("子代理对话暂不支持分叉")
+        }
         let newId = UUID().uuidString.lowercased()
-        let entries = sourceEntries.map { entry -> JSONValue in
+        // Forks from a message end after its trailing tool results; other ids (or none) copy everything.
+        var sliced = sourceEntries
+        if let atEntryId {
+            // Like the desktop `forkSession`: the id may name an entry or a content block of an
+            // assistant message (a merged turn id); an unknown id copies the whole conversation.
+            let targetIndex = sourceEntries.firstIndex(where: { $0["id"]?.stringValue == atEntryId })
+                ?? sourceEntries.firstIndex(where: { entry in
+                    guard entry["kind"]?.stringValue == "assistant" else { return false }
+                    return entry["content"]?.arrayValue?.contains { $0["id"]?.stringValue == atEntryId } ?? false
+                })
+            if let targetIndex {
+                var endIndex = targetIndex + 1
+                while endIndex < sourceEntries.count, sourceEntries[endIndex]["kind"]?.stringValue == "toolResult" {
+                    endIndex += 1
+                }
+                sliced = Array(sourceEntries[..<endIndex])
+            }
+        }
+        let entries = sliced.map { entry -> JSONValue in
             guard var object = entry.objectValue else { return entry }
             object["id"] = .string(UUID().uuidString.lowercased())
             object["sessionId"] = .string(newId)
@@ -1224,6 +1248,7 @@ final class DesktopClient: Identifiable {
         let optionalFields: [String: String?] = [
             "projectId": source.projectId,
             "branch": worktree.map(\.branch) ?? source.branch,
+            "baseBranch": source.baseBranch,
             "workLocation": workLocation,
             "worktreePath": isNewWorktree ? nil : source.worktreePath,
             "environmentId": worktree == nil ? source.environmentId : worktree?.environmentId,

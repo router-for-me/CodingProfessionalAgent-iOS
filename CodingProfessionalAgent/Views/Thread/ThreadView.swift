@@ -168,9 +168,10 @@ private struct ThreadContent: View {
         return commands
     }
 
-    // Sub-agent badges open the sub-agent's own run view.
+    // Sub-agent badges open the sub-agent's own run view; the fork action copies the conversation
+    // up to that message and opens the copy (desktop `onForkMessage`).
     private var turnContext: TurnContext {
-        TurnContext(subAgents: model.subAgents, toolDetails: model.toolDetails) { record in
+        TurnContext(subAgents: model.subAgents, toolDetails: model.toolDetails, onFork: fork) { record in
             router.push(.subAgent(
                 connectionId: client.id,
                 parentSessionId: record.parentSessionId,
@@ -709,6 +710,19 @@ private struct ThreadContent: View {
             do {
                 try await client.setSessionRuntime(id: model.sessionId, modelId: modelId, reasoningEffort: reasoning, speed: speed)
                 notice = modelChanged ? "已切换到 \(label)" : "已更新模型设置"
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    // Copies the conversation up to `entry` into a new one and opens it, like the desktop's
+    // message fork action (`forkSession` + navigate to the copy).
+    private func fork(fromEntry entry: ConversationEntry) {
+        Task {
+            do {
+                let newId = try await client.forkSession(id: model.sessionId, atEntryId: entry.id)
+                router.push(.thread(connectionId: client.id, sessionId: newId))
             } catch {
                 errorMessage = error.localizedDescription
             }

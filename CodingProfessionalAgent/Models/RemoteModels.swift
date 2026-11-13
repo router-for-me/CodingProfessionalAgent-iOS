@@ -61,6 +61,7 @@ struct RemoteSession: Decodable, Identifiable, Hashable, Sendable {
     var scheduleId: String?
     var parentSessionId: String?
     var branch: String?
+    var baseBranch: String?
     var title: String
     var pinned: Bool
     var unread: UnreadState
@@ -87,7 +88,7 @@ struct RemoteSession: Decodable, Identifiable, Hashable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, projectId, scheduleId, parentSessionId, branch, title, pinned, unread, archivedAt, firstPromptAt
+        case id, projectId, scheduleId, parentSessionId, branch, baseBranch, title, pinned, unread, archivedAt, firstPromptAt
         case modelId, reasoningEffort, speed, workLocation, worktreePath, environmentId, worktreeSetup
         case createdAt, updatedAt
     }
@@ -99,6 +100,7 @@ struct RemoteSession: Decodable, Identifiable, Hashable, Sendable {
         scheduleId = try? container.decodeIfPresent(String.self, forKey: .scheduleId)
         parentSessionId = try? container.decodeIfPresent(String.self, forKey: .parentSessionId)
         branch = try? container.decodeIfPresent(String.self, forKey: .branch)
+        baseBranch = try? container.decodeIfPresent(String.self, forKey: .baseBranch)
         title = (try? container.decodeIfPresent(String.self, forKey: .title)) ?? ""
         pinned = (try? container.decodeIfPresent(Bool.self, forKey: .pinned)) ?? false
         // `true` or `"error"`; absent or `false` means read.

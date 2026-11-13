@@ -178,6 +178,8 @@ private struct SubAgentContent: View {
     @Environment(Router.self) private var router
     @Environment(\.navigationWidth) private var navigationWidth
     @State private var model: ThreadModel
+    // Error of the latest message fork, shown in an alert.
+    @State private var forkError: String?
     @AppStorage(PreferenceKey.wrapDiffLines) private var wrapDiffLines = true
 
     init(client: DesktopClient, parentSessionId: String, agentId: String, sessionId: String) {
@@ -199,13 +201,27 @@ private struct SubAgentContent: View {
     }
 
     private var turnContext: TurnContext {
-        TurnContext(subAgents: model.subAgents, toolDetails: model.toolDetails) { child in
+        // The fork action copies this run up to that message into a new top-level conversation and
+        // opens the copy, like the desktop's message fork inside a sub-agent conversation.
+        TurnContext(subAgents: model.subAgents, toolDetails: model.toolDetails, onFork: fork) { child in
             router.push(.subAgent(
                 connectionId: client.id,
                 parentSessionId: child.parentSessionId,
                 agentId: child.id,
                 sessionId: child.conversationId
             ))
+        }
+    }
+
+    // Copies this run up to `entry` into a new top-level conversation and opens it.
+    private func fork(fromEntry entry: ConversationEntry) {
+        Task {
+            do {
+                let newId = try await client.forkSession(id: model.sessionId, atEntryId: entry.id)
+                router.push(.thread(connectionId: client.id, sessionId: newId))
+            } catch {
+                forkError = error.localizedDescription
+            }
         }
     }
 
@@ -253,6 +269,11 @@ private struct SubAgentContent: View {
                     .frame(width: titleWidth, alignment: .leading)
             }
             .sharedBackgroundVisibility(.hidden)
+        }
+        .alert("操作失败", isPresented: Binding(get: { forkError != nil }, set: { if !$0 { forkError = nil } })) {
+            Button("好", role: .cancel) {}
+        } message: {
+            Text(forkError ?? "")
         }
         .onAppear {
             model.activate()

@@ -133,6 +133,12 @@ struct AssistantTurn {
         items.first?.id ?? "pending-assistant-turn"
     }
 
+    // Message whose id anchors a fork of this turn (desktop `onForkMessage(targetId)`): the last
+    // assistant message; an empty running turn has no entry to fork from yet.
+    var forkEntry: ConversationEntry? {
+        messages.last ?? items.last
+    }
+
     var messages: [ConversationEntry] {
         items.filter { $0.kind == .assistant }
     }

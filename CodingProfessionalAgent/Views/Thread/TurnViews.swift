@@ -7,6 +7,20 @@ struct TurnContext {
     // Live details of running tools by normalized call id.
     var toolDetails: [String: JSONValue] = [:]
     var openSubAgent: (SubAgentRecord) -> Void = { _ in }
+    // Forks the conversation from a message (desktop `onForkMessage`); nil hides the action.
+    var onFork: ((ConversationEntry) -> Void)? = nil
+
+    init(
+        subAgents: [SubAgentRecord] = [],
+        toolDetails: [String: JSONValue] = [:],
+        onFork: ((ConversationEntry) -> Void)? = nil,
+        openSubAgent: @escaping (SubAgentRecord) -> Void = { _ in }
+    ) {
+        self.subAgents = subAgents
+        self.toolDetails = toolDetails
+        self.onFork = onFork
+        self.openSubAgent = openSubAgent
+    }
 }
 
 // One assistant turn in the desktop's folded style: an elapsed-time header followed by the activity
@@ -51,7 +65,11 @@ struct AssistantTurnView: View {
             }
 
             if status == .done && !reply.isEmpty {
-                MessageActions(text: reply, createdAt: completedAt ?? turn.messages.last?.createdAt ?? 0)
+                MessageActions(
+                    text: reply,
+                    createdAt: completedAt ?? turn.messages.last?.createdAt ?? 0,
+                    onFork: turn.forkEntry.flatMap { entry in context.onFork.map { fork in { fork(entry) } } }
+                )
             }
         }
         .onChange(of: turn.isLive) { _, isLive in
