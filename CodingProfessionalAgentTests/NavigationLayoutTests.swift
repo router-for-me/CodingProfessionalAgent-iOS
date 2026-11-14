@@ -327,4 +327,57 @@ final class NavigationLayoutTests: XCTestCase {
         }
         XCTAssertEqual(previousOpacity, 1.0, accuracy: 0.02)
     }
+
+    func testOpenThreadUpdatesPathAndSettingsViewExposesTurnNotificationToggle() throws {
+        let suiteName = "NavigationLayoutTests.Notif.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        let store = ConnectionStore(defaults: defaults, persistsCredentials: false)
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+
+        let connectionId = UUID()
+        let router = Router()
+        router.push(.newThread(NewThreadContext()))
+        router.openThread(connectionId: connectionId, sessionId: "sess-9")
+        XCTAssertEqual(router.path, [.thread(connectionId: connectionId, sessionId: "sess-9")])
+        XCTAssertEqual(router.externalNavigationRevision, 1)
+
+        router.openThread(connectionId: connectionId, sessionId: "sess-9")
+        XCTAssertEqual(router.path, [.thread(connectionId: connectionId, sessionId: "sess-9")])
+        XCTAssertEqual(router.externalNavigationRevision, 2)
+
+        // Mount SettingsView with zero connections: 2 Composer toggles + 2 Behavior toggles = 4 UISwitch controls.
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene: scene)
+        window.frame = CGRect(x: 0, y: 0, width: 440, height: 956)
+        let settingsRoot = SettingsView()
+            .environment(store)
+            .defaultAppStorage(defaults)
+        window.rootViewController = UIHostingController(rootView: settingsRoot)
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+        }
+
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        window.layoutIfNeeded()
+
+        func allDescendants(of view: UIView) -> [UIView] {
+            view.subviews + view.subviews.flatMap(allDescendants(of:))
+        }
+        let switches = allDescendants(of: window)
+            .compactMap { $0 as? UISwitch }
+            .sorted { $0.convert($0.bounds.origin, to: window).y < $1.convert($1.bounds.origin, to: window).y }
+        XCTAssertEqual(switches.count, 4, "Expected 4 preference toggles including 任务完成通知")
+
+        // The 3rd switch from top is "任务完成通知" (default true); flipping it updates PreferenceKey.notifyOnTurnComplete.
+        let notifSwitch = switches[2]
+        XCTAssertTrue(notifSwitch.isOn)
+        notifSwitch.setOn(false, animated: false)
+        notifSwitch.sendActions(for: .valueChanged)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        XCTAssertEqual(defaults.object(forKey: PreferenceKey.notifyOnTurnComplete) as? Bool, false)
+    }
 }

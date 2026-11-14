@@ -12,6 +12,7 @@ struct SettingsView: View {
     @AppStorage(PreferenceKey.showContextUsage) private var showContextUsage = false
     @AppStorage(PreferenceKey.followUpMode) private var followUpMode = FollowUpMode.queue
     @AppStorage(PreferenceKey.wrapDiffLines) private var wrapDiffLines = true
+    @AppStorage(PreferenceKey.notifyOnTurnComplete) private var notifyOnTurnComplete = true
     @AppStorage(PreferenceKey.liveActivityMode) private var liveActivityMode = LiveActivityMode.perComputer
 
     var body: some View {
@@ -67,6 +68,7 @@ struct SettingsView: View {
                 }
 
                 Section {
+                    Toggle("任务完成通知", isOn: $notifyOnTurnComplete)
                     Toggle("代码差异行自动换行", isOn: $wrapDiffLines)
                     Picker("实时活动", selection: $liveActivityMode) {
                         ForEach(LiveActivityMode.allCases) { mode in

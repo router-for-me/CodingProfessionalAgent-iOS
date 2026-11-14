@@ -12,6 +12,10 @@ enum ConnectionState: Equatable {
 struct DesktopEvent: Sendable {
     // Synthetic event emitted after every (re)connect resynchronization.
     static let synced = "client:synced"
+    // Synthetic event emitted when a top-level conversation turn finishes normally.
+    static let turnCompleted = "client:turn-completed"
+    // Synthetic event emitted when optimistic local run placeholders are added or cleared.
+    static let localRunsChanged = "client:local-runs-changed"
 
     let kind: String
     let payload: JSONValue
@@ -91,6 +95,21 @@ final class DesktopClient: Identifiable {
     @ObservationIgnored private var sendQueue: Task<Void, Never>?
     @ObservationIgnored private var queuedSends = 0
 
+    private struct TrackedRunOutcome {
+        var runId: String
+        var sawCompletedTurn = false
+        var sawError = false
+        var wasAborted = false
+    }
+
+    private static let maxNotifiedRunKeys = 128
+    private static let abortSuppressionWindowMs: Double = 30_000
+    @ObservationIgnored private var runOutcomes: [String: TrackedRunOutcome] = [:]
+    @ObservationIgnored private var disconnectedActiveRuns: [String: String] = [:]
+    @ObservationIgnored private var recentlyAbortedAt: [String: Double] = [:]
+    @ObservationIgnored private var notifiedRunKeyOrder: [String] = []
+    @ObservationIgnored private var notifiedRunKeys: Set<String> = []
+
     init(connection: DesktopConnection, tunnelManager: TunnelClientManager = .shared) {
         self.id = connection.id
         self.connection = connection
@@ -125,6 +144,7 @@ final class DesktopClient: Identifiable {
         generation += 1
         reconnectTask?.cancel()
         reconnectTask = nil
+        resetTurnOutcomeTracking()
         closeSocket()
         releaseTunnelLease()
         state = .disconnected
@@ -152,6 +172,7 @@ final class DesktopClient: Identifiable {
             skillUsageCounts = [:]
             subAgentsByParent = [:]
             hasSynced = false
+            resetTurnOutcomeTracking()
         }
         if shouldRun {
             retryCount = 0
@@ -355,9 +376,9 @@ final class DesktopClient: Identifiable {
             guard current == generation else { return }
             switch message {
             case .string(let text):
-                handleMessage(Data(text.utf8))
+                ingestServerMessage(Data(text.utf8))
             case .data(let data):
-                handleMessage(data)
+                ingestServerMessage(data)
             @unknown default:
                 break
             }
@@ -501,11 +522,12 @@ final class DesktopClient: Identifiable {
                 return
             }
             guard current == generation else { return }
-            handleMessage(data)
+            ingestServerMessage(data)
         }
     }
 
     private func closeSocket() {
+        snapshotInterruptedRunsIfNeeded()
         socket?.cancel(with: .goingAway, reason: nil)
         socket = nil
         tunnelStream?.close(code: 1000, reason: "")
@@ -515,6 +537,7 @@ final class DesktopClient: Identifiable {
     }
 
     private func socketClosed(error: Error, authRejected: Bool) {
+        snapshotInterruptedRunsIfNeeded()
         socket = nil
         tunnelStream = nil
         serverClientId = nil
@@ -578,7 +601,7 @@ final class DesktopClient: Identifiable {
 
     // MARK: - Messages
 
-    private func handleMessage(_ data: Data) {
+    func ingestServerMessage(_ data: Data) {
         guard let message = JSONValue.parse(data) else { return }
         switch message["type"]?.stringValue {
         case "hello":
@@ -612,6 +635,8 @@ final class DesktopClient: Identifiable {
             payload = parsed
         }
 
+        var completedTurnPayload: JSONValue?
+
         switch kind {
         case "projects:updated":
             if payload.arrayValue != nil {
@@ -620,15 +645,27 @@ final class DesktopClient: Identifiable {
         case "session:meta-updated":
             if let session = try? payload.decode(RemoteSession.self) {
                 upsertSession(session)
+                if session.unread == .error, runOutcomes[session.id] != nil {
+                    runOutcomes[session.id]?.sawError = true
+                }
             }
         case "session:deleted":
             if let sessionId = payload["sessionId"]?.stringValue {
                 sessions.removeAll { $0.id == sessionId }
                 activeRuns[sessionId] = nil
+                runOutcomes[sessionId] = nil
+                disconnectedActiveRuns[sessionId] = nil
+                recentlyAbortedAt[sessionId] = nil
             }
         case "session:run-status":
             if let run = try? payload.decode(ActiveRun.self) {
-                applyRunStatus(run)
+                completedTurnPayload = applyRunStatus(run)
+            }
+        case "session:stream-event":
+            recordStreamOutcome(payload)
+        case "session:abort-run":
+            if let sessionId = payload["sessionId"]?.stringValue, !sessionId.isEmpty {
+                markSessionAborted(sessionId)
             }
         case "session:entries-updated":
             // Saved entries update the desktop's skill metrics, as the desktop itself refetches here.
@@ -636,11 +673,18 @@ final class DesktopClient: Identifiable {
         case "session:subagent-state":
             for record in payload["agents"]?.decodeList(SubAgentRecord.self) ?? [] where !record.parentSessionId.isEmpty {
                 upsertSubAgent(record)
+                if !record.sessionId.isEmpty {
+                    runOutcomes[record.sessionId] = nil
+                    disconnectedActiveRuns[record.sessionId] = nil
+                }
             }
         default:
             break
         }
 
+        if let completedTurnPayload {
+            emit(DesktopEvent(kind: DesktopEvent.turnCompleted, payload: completedTurnPayload))
+        }
         emit(DesktopEvent(kind: kind, payload: payload))
     }
 
@@ -664,10 +708,11 @@ final class DesktopClient: Identifiable {
         sessions[index] = merged
     }
 
-    private func applyRunStatus(_ run: ActiveRun) {
+    private func applyRunStatus(_ run: ActiveRun) -> JSONValue? {
         guard run.status == "idle" else {
             activeRuns[run.sessionId] = run
-            return
+            trackActiveRunStatus(run)
+            return nil
         }
         // Ignore a stale idle from a run that has already been replaced.
         if let current = activeRuns[run.sessionId],
@@ -675,9 +720,200 @@ final class DesktopClient: Identifiable {
            current.runId != run.runId,
            !current.runId.hasPrefix(Self.optimisticRunPrefix)
         {
-            return
+            return nil
         }
         activeRuns[run.sessionId] = nil
+        let outcome = runOutcomes.removeValue(forKey: run.sessionId)
+        disconnectedActiveRuns[run.sessionId] = nil
+        guard !isSubAgentSession(run.sessionId),
+              let outcome,
+              outcome.sawCompletedTurn,
+              !outcome.sawError,
+              !outcome.wasAborted
+        else {
+            return nil
+        }
+        let effectiveRunId = run.runId.isEmpty ? outcome.runId : run.runId
+        let dedupeKey = effectiveRunId.isEmpty
+            ? "\(run.sessionId)#\(Int(run.updatedAt))"
+            : "\(run.sessionId)#\(effectiveRunId)"
+        guard markRunNotified(dedupeKey) else { return nil }
+        return [
+            "sessionId": .string(run.sessionId),
+            "runId": .string(effectiveRunId),
+            "sessionTitle": .string(session(id: run.sessionId)?.title ?? ""),
+        ]
+    }
+
+    private func isSubAgentSession(_ sessionId: String) -> Bool {
+        if session(id: sessionId)?.parentSessionId != nil {
+            return true
+        }
+        return subAgentsByParent.values.contains { records in
+            records.contains { $0.sessionId == sessionId }
+        }
+    }
+
+    private func trackActiveRunStatus(_ run: ActiveRun) {
+        guard !isSubAgentSession(run.sessionId) else {
+            runOutcomes[run.sessionId] = nil
+            return
+        }
+        guard var existing = runOutcomes[run.sessionId] else {
+            runOutcomes[run.sessionId] = TrackedRunOutcome(runId: run.runId)
+            return
+        }
+        if existing.runId.isEmpty || existing.runId.hasPrefix(Self.optimisticRunPrefix) {
+            if !run.runId.isEmpty {
+                existing.runId = run.runId
+                runOutcomes[run.sessionId] = existing
+            }
+            return
+        }
+        if !run.runId.isEmpty, run.runId != existing.runId, !run.runId.hasPrefix(Self.optimisticRunPrefix) {
+            runOutcomes[run.sessionId] = TrackedRunOutcome(runId: run.runId)
+        }
+    }
+
+    private func recordStreamOutcome(_ payload: JSONValue) {
+        guard let sessionId = payload["sessionId"]?.stringValue,
+              !sessionId.isEmpty,
+              !isSubAgentSession(sessionId),
+              let event = payload["event"]
+        else {
+            return
+        }
+        if event["nested"]?.boolValue == true || event["parentToolCallId"]?.stringValue != nil {
+            return
+        }
+        let streamRunId = payload["runId"]?.stringValue ?? event["runId"]?.stringValue ?? ""
+        var outcome: TrackedRunOutcome
+        if let existing = runOutcomes[sessionId] {
+            if !streamRunId.isEmpty,
+               !existing.runId.isEmpty,
+               !existing.runId.hasPrefix(Self.optimisticRunPrefix),
+               existing.runId != streamRunId
+            {
+                outcome = TrackedRunOutcome(runId: streamRunId)
+            } else {
+                outcome = existing
+                if !streamRunId.isEmpty && (outcome.runId.isEmpty || outcome.runId.hasPrefix(Self.optimisticRunPrefix)) {
+                    outcome.runId = streamRunId
+                }
+            }
+        } else {
+            outcome = TrackedRunOutcome(runId: streamRunId)
+        }
+
+        switch event["type"]?.stringValue {
+        case "assistant-start", "tool-start":
+            outcome.sawCompletedTurn = false
+        case "assistant-end":
+            let entry = event["entry"]
+            let status = entry?["status"]?.stringValue ?? ""
+            let stopReason = entry?["stopReason"]?.stringValue ?? "stop"
+            let errorMessage = entry?["errorMessage"]?.stringValue ?? ""
+            if status == "aborted" || stopReason == "aborted" {
+                outcome.wasAborted = true
+                outcome.sawCompletedTurn = false
+            } else if !errorMessage.isEmpty || status == "error" {
+                outcome.sawError = true
+                outcome.sawCompletedTurn = false
+            } else if status == "done" && stopReason != "toolUse" {
+                outcome.sawCompletedTurn = true
+            } else if stopReason == "toolUse" {
+                outcome.sawCompletedTurn = false
+            }
+        case "error":
+            outcome.sawError = true
+            outcome.sawCompletedTurn = false
+        default:
+            break
+        }
+        runOutcomes[sessionId] = outcome
+    }
+
+    private func markSessionAborted(_ sessionId: String) {
+        recentlyAbortedAt[sessionId] = Date().milliseconds
+        if runOutcomes[sessionId] != nil {
+            runOutcomes[sessionId]?.wasAborted = true
+            runOutcomes[sessionId]?.sawCompletedTurn = false
+        } else if let active = activeRuns[sessionId] {
+            runOutcomes[sessionId] = TrackedRunOutcome(runId: active.runId, wasAborted: true)
+        }
+        disconnectedActiveRuns[sessionId] = nil
+    }
+
+    private func snapshotInterruptedRunsIfNeeded() {
+        guard hasSynced, shouldRun else { return }
+        for (sessionId, run) in activeRuns {
+            guard !run.runId.hasPrefix(Self.optimisticRunPrefix),
+                  !isSubAgentSession(sessionId),
+                  disconnectedActiveRuns[sessionId] == nil
+            else {
+                continue
+            }
+            let outcome = runOutcomes[sessionId]
+            if outcome?.wasAborted == true || outcome?.sawError == true {
+                continue
+            }
+            disconnectedActiveRuns[sessionId] = run.runId
+        }
+    }
+
+    private func reconcileInterruptedRunsAfterResync(currentRuns: [String: ActiveRun]) {
+        let now = Date().milliseconds
+        recentlyAbortedAt = recentlyAbortedAt.filter { now - $0.value < Self.abortSuppressionWindowMs }
+
+        let interrupted = disconnectedActiveRuns
+        disconnectedActiveRuns.removeAll()
+
+        for (sessionId, run) in currentRuns where !isSubAgentSession(sessionId) {
+            if runOutcomes[sessionId] == nil {
+                runOutcomes[sessionId] = TrackedRunOutcome(runId: run.runId)
+            }
+        }
+
+        for (sessionId, oldRunId) in interrupted {
+            if currentRuns[sessionId] != nil {
+                continue
+            }
+            runOutcomes[sessionId] = nil
+            guard recentlyAbortedAt[sessionId] == nil,
+                  !isSubAgentSession(sessionId),
+                  let session = session(id: sessionId),
+                  session.unread == .unread
+            else {
+                continue
+            }
+            let dedupeKey = oldRunId.isEmpty ? "\(sessionId)#resync-\(Int(session.updatedAt))" : "\(sessionId)#\(oldRunId)"
+            guard markRunNotified(dedupeKey) else { continue }
+            emit(DesktopEvent(
+                kind: DesktopEvent.turnCompleted,
+                payload: [
+                    "sessionId": .string(sessionId),
+                    "runId": .string(oldRunId),
+                    "sessionTitle": .string(session.title),
+                ]
+            ))
+        }
+    }
+
+    private func markRunNotified(_ key: String) -> Bool {
+        guard !notifiedRunKeys.contains(key) else { return false }
+        notifiedRunKeys.insert(key)
+        notifiedRunKeyOrder.append(key)
+        if notifiedRunKeyOrder.count > Self.maxNotifiedRunKeys {
+            let evicted = notifiedRunKeyOrder.removeFirst()
+            notifiedRunKeys.remove(evicted)
+        }
+        return true
+    }
+
+    private func resetTurnOutcomeTracking() {
+        runOutcomes.removeAll()
+        disconnectedActiveRuns.removeAll()
+        recentlyAbortedAt.removeAll()
     }
 
     // MARK: - Listeners
@@ -800,16 +1036,19 @@ final class DesktopClient: Identifiable {
     // Re-fetches authoritative projects, sessions, runs, models and defaults.
     func resync() async {
         guard state == .connected else { return }
+        let wasSynced = hasSynced
         // Results of a superseded connection must not overwrite newer data.
         let current = generation
         let runsValue = try? await call("session:getActiveRuns")
         guard current == generation else { return }
+        var syncedRuns: [String: ActiveRun]?
         if let runsValue, runsValue.arrayValue != nil {
             var runs: [String: ActiveRun] = [:]
             for run in runsValue.decodeList(ActiveRun.self) where run.status != "idle" {
                 runs[run.sessionId] = run
             }
             activeRuns = runs
+            syncedRuns = runs
         }
         let projectsValue = try? await call("kvstore:get", ["projects"])
         guard current == generation else { return }
@@ -818,8 +1057,10 @@ final class DesktopClient: Identifiable {
         }
         let sessionsValue = try? await call("session:listSessions")
         guard current == generation else { return }
+        var didSyncSessions = false
         if let sessionsValue, sessionsValue.arrayValue != nil {
             sessions = sessionsValue.decodeList(RemoteSession.self)
+            didSyncSessions = true
         }
         let modelsValue = try? await call("kvstore:get", ["cachedModels"])
         guard current == generation else { return }
@@ -833,6 +1074,23 @@ final class DesktopClient: Identifiable {
         }
         guard current == generation, state == .connected else { return }
         hasSynced = true
+        if wasSynced {
+            // Only reconcile and consume interrupted snapshots when both runs and sessions succeeded.
+            if let syncedRuns, didSyncSessions {
+                reconcileInterruptedRunsAfterResync(currentRuns: syncedRuns)
+            } else if let syncedRuns {
+                for (sessionId, run) in syncedRuns where !isSubAgentSession(sessionId) && runOutcomes[sessionId] == nil {
+                    runOutcomes[sessionId] = TrackedRunOutcome(runId: run.runId)
+                }
+            }
+        } else {
+            disconnectedActiveRuns.removeAll()
+            if let syncedRuns {
+                for (sessionId, run) in syncedRuns where !isSubAgentSession(sessionId) && runOutcomes[sessionId] == nil {
+                    runOutcomes[sessionId] = TrackedRunOutcome(runId: run.runId)
+                }
+            }
+        }
         refreshSkillUsage()
         for sessionId in viewedSessionIds.keys {
             markReadIfViewed(sessionId)
@@ -881,6 +1139,21 @@ final class DesktopClient: Identifiable {
 
     func isRunning(_ sessionId: String) -> Bool {
         activeRuns[sessionId] != nil
+    }
+
+    // Active top-level conversations ordered by run update timestamp, excluding sub-agents.
+    var activeTopLevelSessions: [(sessionId: String, title: String)] {
+        activeRuns.values
+            .filter { $0.status != "idle" && !isSubAgentSession($0.sessionId) }
+            .sorted {
+                if $0.updatedAt != $1.updatedAt {
+                    return $0.updatedAt < $1.updatedAt
+                }
+                return $0.sessionId < $1.sessionId
+            }
+            .map { run in
+                (sessionId: run.sessionId, title: session(id: run.sessionId)?.title ?? "")
+            }
     }
 
     // Models enabled in the desktop settings, in the desktop's configured order.
@@ -1078,12 +1351,19 @@ final class DesktopClient: Identifiable {
             let runId = Self.optimisticRunPrefix + pendingId
             optimisticRunId = runId
             activeRuns[sessionId] = ActiveRun(sessionId: sessionId, runId: runId, status: "running")
+            if !isSubAgentSession(sessionId), runOutcomes[sessionId] == nil {
+                runOutcomes[sessionId] = TrackedRunOutcome(runId: runId)
+            }
+            emit(DesktopEvent(kind: DesktopEvent.localRunsChanged, payload: ["sessionId": .string(sessionId)]))
             Task { @MainActor [weak self] in
                 // Drop the placeholder if the desktop never reports the run.
                 try? await Task.sleep(for: .seconds(20))
-                if self?.activeRuns[sessionId]?.runId == runId {
-                    self?.activeRuns[sessionId] = nil
+                guard let self, self.activeRuns[sessionId]?.runId == runId else { return }
+                self.activeRuns[sessionId] = nil
+                if self.runOutcomes[sessionId]?.runId == runId {
+                    self.runOutcomes[sessionId] = nil
                 }
+                self.emit(DesktopEvent(kind: DesktopEvent.localRunsChanged, payload: ["sessionId": .string(sessionId)]))
             }
         }
         do {
@@ -1091,6 +1371,10 @@ final class DesktopClient: Identifiable {
         } catch {
             if let optimisticRunId, activeRuns[sessionId]?.runId == optimisticRunId {
                 activeRuns[sessionId] = nil
+                if runOutcomes[sessionId]?.runId == optimisticRunId {
+                    runOutcomes[sessionId] = nil
+                }
+                emit(DesktopEvent(kind: DesktopEvent.localRunsChanged, payload: ["sessionId": .string(sessionId)]))
             }
             throw error
         }
@@ -1115,9 +1399,11 @@ final class DesktopClient: Identifiable {
     }
 
     func abortRun(sessionId: String) async throws {
+        markSessionAborted(sessionId)
         _ = try await call("session:abortRun", [.string(sessionId)])
         if activeRuns[sessionId]?.runId.hasPrefix(Self.optimisticRunPrefix) == true {
             activeRuns[sessionId] = nil
+            emit(DesktopEvent(kind: DesktopEvent.localRunsChanged, payload: ["sessionId": .string(sessionId)]))
         }
     }
 

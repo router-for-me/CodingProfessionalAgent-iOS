@@ -229,6 +229,16 @@ struct HomeView: View {
                     filter = .all
                 }
             }
+            .onChange(of: router.externalNavigationRevision) { _, _ in
+                pendingRoute = nil
+                showsSettings = false
+                showsSearch = false
+                editor = nil
+                showsTunnelSheet = false
+                showsAddConnectionDialog = false
+                editingProject = nil
+                worktreeTarget = nil
+            }
             .task(id: composerSkillsKey) {
                 await composerClient?.loadSkills(projectPath: composerProjectPath)
             }

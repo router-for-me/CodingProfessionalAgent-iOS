@@ -11,6 +11,7 @@ final class ConnectionStore {
     private let persistsCredentials: Bool
     private(set) var connections: [DesktopConnection] = []
     @ObservationIgnored private var clients: [UUID: DesktopClient] = [:]
+    @ObservationIgnored private var changeObservers: [UUID: @MainActor () -> Void] = [:]
 
     init(defaults: UserDefaults = .standard, persistsCredentials: Bool = true) {
         self.defaults = defaults
@@ -118,9 +119,26 @@ final class ConnectionStore {
         }
     }
 
+    func addChangeObserver(_ handler: @escaping @MainActor () -> Void) -> UUID {
+        let token = UUID()
+        changeObservers[token] = handler
+        return token
+    }
+
+    func removeChangeObserver(_ token: UUID) {
+        changeObservers[token] = nil
+    }
+
+    private func notifyObservers() {
+        for observer in Array(changeObservers.values) {
+            observer()
+        }
+    }
+
     private func save() {
         if let data = try? JSONEncoder().encode(connections) {
             defaults.set(data, forKey: Self.storageKey)
         }
+        notifyObservers()
     }
 }

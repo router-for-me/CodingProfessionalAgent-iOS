@@ -24,6 +24,10 @@ targets:
                 # The desktop Web server is plain HTTP on user-provided hosts.
                 NSAppTransportSecurity:
                     NSAllowsArbitraryLoads: true
+                UIBackgroundModes:
+                    - processing
+                BGTaskSchedulerPermittedIdentifiers:
+                    - me.router-for.CodingProfessionalAgent.turn.*
         settings:
             base:
                 PRODUCT_BUNDLE_IDENTIFIER: me.router-for.CodingProfessionalAgent

@@ -26,6 +26,7 @@ enum Route: Hashable {
 @Observable
 final class Router {
     var path: [Route] = []
+    private(set) var externalNavigationRevision = 0
 
     func push(_ route: Route) {
         path.append(route)
@@ -37,6 +38,15 @@ final class Router {
             path.append(route)
         } else {
             path[path.count - 1] = route
+        }
+    }
+
+    // Navigates directly to a conversation from an external trigger such as a notification tap.
+    func openThread(connectionId: UUID, sessionId: String) {
+        externalNavigationRevision += 1
+        let destination = Route.thread(connectionId: connectionId, sessionId: sessionId)
+        if path != [destination] {
+            path = [destination]
         }
     }
 }

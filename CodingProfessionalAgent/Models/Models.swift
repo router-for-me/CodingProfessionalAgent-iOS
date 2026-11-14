@@ -237,6 +237,7 @@ enum PreferenceKey {
     static let showContextUsage = "composer.showContextUsage"
     static let followUpMode = "composer.followUpMode"
     static let wrapDiffLines = "behavior.wrapDiffLines"
+    static let notifyOnTurnComplete = "behavior.notifyOnTurnComplete"
     static let liveActivityMode = "behavior.liveActivityMode"
     static let lastTunnelBaseURL = "tunnel.lastBaseURL"
     static let tunnelClientUUID = "tunnel.clientUUID"
