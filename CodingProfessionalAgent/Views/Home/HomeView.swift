@@ -402,7 +402,9 @@ struct HomeView: View {
         let groupKey = "\(client.id.uuidString)/\(project?.id ?? "-")"
         let isCollapsed = collapsedGroups.contains(groupKey)
         let isExpanded = expandedGroups.contains(groupKey)
-        let shownThreads = isExpanded ? threads : Array(threads.prefix(collapsedThreadLimit))
+        let attentionCount = threads.filter { client.isRunning($0.id) || $0.isUnread }.count
+        let visibleLimit = max(collapsedThreadLimit, attentionCount)
+        let shownThreads = isExpanded ? threads : Array(threads.prefix(visibleLimit))
 
         let title = project?.name ?? "对话"
         // Tapping the project row folds its conversations, like the desktop sidebar.
@@ -469,7 +471,7 @@ struct HomeView: View {
                 }
             }
 
-            if !isCollapsed, threads.count > collapsedThreadLimit {
+            if !isCollapsed, threads.count > visibleLimit {
                 Button {
                     withAnimation(.snappy) {
                         if isExpanded {
@@ -709,7 +711,7 @@ struct HomeView: View {
 
     // Pinned conversations are listed in their own section instead of under their project.
     private func threads(of client: DesktopClient, projectId: String) -> [RemoteSession] {
-        sortThreads(client.sessions.filter { $0.isVisibleInList && !$0.pinned && $0.projectId == projectId })
+        sortThreads(client.sessions.filter { $0.isVisibleInList && !$0.pinned && $0.projectId == projectId }, of: client)
     }
 
     // Conversations without a (known) project.
@@ -719,11 +721,35 @@ struct HomeView: View {
             guard session.isVisibleInList, !session.pinned else { return false }
             guard let projectId = session.projectId else { return true }
             return !projectIds.contains(projectId)
-        })
+        }, of: client)
     }
 
-    private func sortThreads(_ sessions: [RemoteSession]) -> [RemoteSession] {
-        sessions.sorted { $0.updatedAt > $1.updatedAt }
+    // Running tasks stay pinned at the top of their project, followed by unviewed completed tasks, then read tasks.
+    private func sortThreads(_ sessions: [RemoteSession], of client: DesktopClient) -> [RemoteSession] {
+        sessions.sorted { lhs, rhs in
+            let leftRank = threadPriorityRank(lhs, of: client)
+            let rightRank = threadPriorityRank(rhs, of: client)
+            if leftRank != rightRank {
+                return leftRank < rightRank
+            }
+            if lhs.updatedAt != rhs.updatedAt {
+                return lhs.updatedAt > rhs.updatedAt
+            }
+            if lhs.createdAt != rhs.createdAt {
+                return lhs.createdAt > rhs.createdAt
+            }
+            return lhs.id < rhs.id
+        }
+    }
+
+    private func threadPriorityRank(_ session: RemoteSession, of client: DesktopClient) -> Int {
+        if client.isRunning(session.id) {
+            return 0
+        }
+        if session.isUnread {
+            return 1
+        }
+        return 2
     }
 
     private func startThreadFromComposer() {

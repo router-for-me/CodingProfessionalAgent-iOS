@@ -86,9 +86,44 @@ final class DesktopClient: Identifiable {
     @ObservationIgnored private var isLoadingSkillUsage = false
     @ObservationIgnored private var needsSkillUsageReload = false
     @ObservationIgnored private var lastSkillUsageFetch = Date.distantPast
-    // Conversations on screen (view count by id) and their in-flight "mark read" requests.
+    // Conversations on screen (view count by id) and pending read/unread metadata writes.
+    private struct ReadSyncIntent: Equatable {
+        var revision: Int
+        var maxUpdatedAt: Double
+        let runSequenceAtRead: Int
+        var pendingServerUnread: UnreadState?
+    }
+
+    private struct PendingUnreadSync: Equatable {
+        let state: UnreadState
+        let preservedUpdatedAt: Double?
+        let runSequence: Int
+    }
+
+    private struct ViewedWatermark: Equatable {
+        let runSequence: Int
+        var updatedAt: Double
+        let capturedAt: Double
+    }
+
+    private struct FlushedAmbiguousRead: Equatable {
+        let maxUpdatedAt: Double
+        let fallbackUnread: UnreadState
+        let viewEpoch: Int
+        let capturedAt: Double
+    }
+
     @ObservationIgnored private var viewedSessionIds: [String: Int] = [:]
+    @ObservationIgnored private var sessionRunSequences: [String: Int] = [:]
+    @ObservationIgnored private var sessionViewEpochs: [String: Int] = [:]
+    @ObservationIgnored private var readSyncIntents: [String: ReadSyncIntent] = [:]
+    @ObservationIgnored private var viewedWatermarks: [String: ViewedWatermark] = [:]
+    @ObservationIgnored private var flushedAmbiguousReads: [String: FlushedAmbiguousRead] = [:]
+    @ObservationIgnored private var readSyncCounter = 0
     @ObservationIgnored private var pendingReadIds: Set<String> = []
+    @ObservationIgnored private var pendingUnreadStates: [String: PendingUnreadSync] = [:]
+    @ObservationIgnored private var inFlightUnreadSyncSequences: [String: Int] = [:]
+    @ObservationIgnored private var inFlightManualReadIds: Set<String> = []
     // Tail of the serialized project list writes.
     @ObservationIgnored private var projectWrites: Task<Void, Never>?
     // RPC messages waiting for a large one encoded in the background, so they are sent in call order.
@@ -97,16 +132,45 @@ final class DesktopClient: Identifiable {
 
     private struct TrackedRunOutcome {
         var runId: String
+        var baselineUpdatedAt: Double = 0
+        var latestEntryTimestamp: Double = 0
+        var initialUnread: UnreadState = .read
         var sawCompletedTurn = false
         var sawError = false
         var wasAborted = false
+        var sawAssistantActivity = false
+        var sawCompaction = false
+        var isExplicitCompaction = false
+    }
+
+    private struct PendingRunVerification {
+        let runId: String
+        let baselineUpdatedAt: Double
+        let previousUnread: UnreadState
+        let runSequence: Int
+        let capturedAt: Double
+        var viewEpochAtCapture: Int
+        var sawCompletedTurn: Bool
+        var sawError: Bool
+        var unreadSuppressed: Bool
+        var needsReconnectReconcile: Bool
+        var capturedWhileRunning: Bool
+        var remainingPersistenceRetries: Int
+        var isResolving = false
+        var retryRequestedWhileResolving = false
+    }
+
+    private struct AbortedRunRecord {
+        let runId: String?
+        let timestamp: Double
     }
 
     private static let maxNotifiedRunKeys = 128
+    private static let maxPendingVerifications = 64
     private static let abortSuppressionWindowMs: Double = 30_000
     @ObservationIgnored private var runOutcomes: [String: TrackedRunOutcome] = [:]
-    @ObservationIgnored private var disconnectedActiveRuns: [String: String] = [:]
-    @ObservationIgnored private var recentlyAbortedAt: [String: Double] = [:]
+    @ObservationIgnored private var pendingRunVerifications: [String: PendingRunVerification] = [:]
+    @ObservationIgnored private var recentlyAbortedRuns: [String: AbortedRunRecord] = [:]
     @ObservationIgnored private var notifiedRunKeyOrder: [String] = []
     @ObservationIgnored private var notifiedRunKeys: Set<String> = []
 
@@ -644,8 +708,17 @@ final class DesktopClient: Identifiable {
             }
         case "session:meta-updated":
             if let session = try? payload.decode(RemoteSession.self) {
+                let previousUnread = self.session(id: session.id)?.unread
+                let currentRunSeq = sessionRunSequences[session.id, default: 0]
+                let isStaleOwnErrorEcho = inFlightUnreadSyncSequences[session.id] != nil
+                    && inFlightUnreadSyncSequences[session.id] != currentRunSeq
                 upsertSession(session)
-                if session.unread == .error, runOutcomes[session.id] != nil {
+                if session.unread == .error,
+                   !isStaleOwnErrorEcho,
+                   previousUnread != .error,
+                   runOutcomes[session.id]?.initialUnread != .error,
+                   runOutcomes[session.id] != nil
+                {
                     runOutcomes[session.id]?.sawError = true
                 }
             }
@@ -654,8 +727,14 @@ final class DesktopClient: Identifiable {
                 sessions.removeAll { $0.id == sessionId }
                 activeRuns[sessionId] = nil
                 runOutcomes[sessionId] = nil
-                disconnectedActiveRuns[sessionId] = nil
-                recentlyAbortedAt[sessionId] = nil
+                pendingRunVerifications[sessionId] = nil
+                recentlyAbortedRuns[sessionId] = nil
+                pendingUnreadStates[sessionId] = nil
+                readSyncIntents[sessionId] = nil
+                viewedWatermarks[sessionId] = nil
+                flushedAmbiguousReads[sessionId] = nil
+                sessionRunSequences[sessionId] = nil
+                sessionViewEpochs[sessionId] = nil
             }
         case "session:run-status":
             if let run = try? payload.decode(ActiveRun.self) {
@@ -670,12 +749,30 @@ final class DesktopClient: Identifiable {
         case "session:entries-updated":
             // Saved entries update the desktop's skill metrics, as the desktop itself refetches here.
             refreshSkillUsage()
+            if let sessionId = payload["sessionId"]?.stringValue, !sessionId.isEmpty {
+                let currentGen = generation
+                if pendingRunVerifications[sessionId] != nil {
+                    Task { @MainActor [weak self] in
+                        await self?.resolvePendingRunVerification(sessionId: sessionId, generation: currentGen)
+                    }
+                } else if flushedAmbiguousReads[sessionId] != nil {
+                    Task { @MainActor [weak self] in
+                        await self?.recheckFlushedAmbiguousRead(sessionId: sessionId, generation: currentGen)
+                    }
+                }
+            }
         case "session:subagent-state":
             for record in payload["agents"]?.decodeList(SubAgentRecord.self) ?? [] where !record.parentSessionId.isEmpty {
                 upsertSubAgent(record)
                 if !record.sessionId.isEmpty {
                     runOutcomes[record.sessionId] = nil
-                    disconnectedActiveRuns[record.sessionId] = nil
+                    pendingRunVerifications[record.sessionId] = nil
+                    pendingUnreadStates[record.sessionId] = nil
+                    readSyncIntents[record.sessionId] = nil
+                    viewedWatermarks[record.sessionId] = nil
+                    flushedAmbiguousReads[record.sessionId] = nil
+                    sessionRunSequences[record.sessionId] = nil
+                    sessionViewEpochs[record.sessionId] = nil
                 }
             }
         default:
@@ -688,15 +785,118 @@ final class DesktopClient: Identifiable {
         emit(DesktopEvent(kind: kind, payload: payload))
     }
 
-    private func upsertSession(_ incoming: RemoteSession) {
-        defer {
-            markReadIfViewed(incoming.id)
+    private func bumpRunSequence(_ sessionId: String) {
+        sessionRunSequences[sessionId, default: 0] += 1
+        viewedWatermarks[sessionId] = nil
+        flushedAmbiguousReads[sessionId] = nil
+    }
+
+    private func recordViewedWatermark(_ sessionId: String, updatedAt: Double = 0) {
+        let currentRunSeq = sessionRunSequences[sessionId, default: 0]
+        let sessionUpdatedAt = session(id: sessionId)?.updatedAt ?? 0
+        let existingUpdatedAt = viewedWatermarks[sessionId]?.runSequence == currentRunSeq
+            ? (viewedWatermarks[sessionId]?.updatedAt ?? 0)
+            : 0
+        if viewedWatermarks[sessionId] == nil,
+           viewedWatermarks.count >= Self.maxPendingVerifications,
+           let oldestKey = viewedWatermarks.min(by: { $0.value.capturedAt < $1.value.capturedAt })?.key
+        {
+            viewedWatermarks.removeValue(forKey: oldestKey)
         }
-        guard let index = sessions.firstIndex(where: { $0.id == incoming.id }) else {
-            sessions.append(incoming)
+        viewedWatermarks[sessionId] = ViewedWatermark(
+            runSequence: currentRunSeq,
+            updatedAt: max(existingUpdatedAt, max(sessionUpdatedAt, updatedAt)),
+            capturedAt: Date().milliseconds
+        )
+    }
+
+    private func bumpViewEpoch(_ sessionId: String) {
+        sessionViewEpochs[sessionId, default: 0] += 1
+    }
+
+    private static func baselineTimestamp(sessionUpdatedAt: Double, runUpdatedAt: Double) -> Double {
+        guard sessionUpdatedAt > 0 else { return 0 }
+        return runUpdatedAt > 0 ? min(sessionUpdatedAt, runUpdatedAt) : sessionUpdatedAt
+    }
+
+    private func requestReadSync(_ sessionId: String, upTo updatedAt: Double? = nil) {
+        let candidateUpdatedAt = updatedAt ?? (session(id: sessionId)?.updatedAt ?? 0)
+        let maxUpdatedAt = max(candidateUpdatedAt, readSyncIntents[sessionId]?.maxUpdatedAt ?? 0)
+        readSyncCounter += 1
+        readSyncIntents[sessionId] = ReadSyncIntent(
+            revision: readSyncCounter,
+            maxUpdatedAt: maxUpdatedAt,
+            runSequenceAtRead: sessionRunSequences[sessionId, default: 0],
+            pendingServerUnread: nil
+        )
+    }
+
+    private func applyLocalReadState(to incoming: RemoteSession) -> RemoteSession {
+        var adjusted = incoming
+        if viewedSessionIds[incoming.id] != nil {
+            if incoming.isUnread {
+                requestReadSync(incoming.id, upTo: incoming.updatedAt)
+            }
+            adjusted.unread = .read
+        } else if let pendingUnread = pendingUnreadStates[incoming.id] {
+            adjusted.unread = pendingUnread.state
+        } else if var intent = readSyncIntents[incoming.id] {
+            if incoming.isUnread, intent.maxUpdatedAt > 0, incoming.updatedAt > intent.maxUpdatedAt {
+                if inFlightUnreadSyncSequences[incoming.id] != nil,
+                   inFlightUnreadSyncSequences[incoming.id] == intent.runSequenceAtRead,
+                   sessionRunSequences[incoming.id, default: 0] == intent.runSequenceAtRead
+                {
+                    // Echo of our own in-flight `syncPendingUnread` for the already-viewed run: absorb server clock.
+                    intent.maxUpdatedAt = incoming.updatedAt
+                    readSyncIntents[incoming.id] = intent
+                } else {
+                    readSyncCounter += 1
+                    intent.revision = readSyncCounter
+                    intent.pendingServerUnread = incoming.unread
+                    readSyncIntents[incoming.id] = intent
+                }
+            }
+            adjusted.unread = .read
+        } else if incoming.isUnread,
+                  let watermark = viewedWatermarks[incoming.id],
+                  sessionRunSequences[incoming.id, default: 0] == watermark.runSequence,
+                  incoming.updatedAt > (session(id: incoming.id)?.updatedAt ?? 0)
+        {
+            viewedWatermarks[incoming.id] = nil
+            requestReadSync(incoming.id, upTo: watermark.updatedAt)
+            if watermark.updatedAt > 0, incoming.updatedAt > watermark.updatedAt, var intent = readSyncIntents[incoming.id] {
+                intent.pendingServerUnread = incoming.unread
+                readSyncIntents[incoming.id] = intent
+            }
+            adjusted.unread = .read
+        }
+        return adjusted
+    }
+
+    private func storePendingVerification(_ verification: PendingRunVerification, for sessionId: String) {
+        if pendingRunVerifications[sessionId] == nil,
+           pendingRunVerifications.count >= Self.maxPendingVerifications,
+           let oldestKey = pendingRunVerifications
+               .filter({ !$0.value.isResolving })
+               .min(by: { $0.value.capturedAt < $1.value.capturedAt })?
+               .key
+        {
+            pendingRunVerifications.removeValue(forKey: oldestKey)
+        }
+        pendingRunVerifications[sessionId] = verification
+    }
+
+    private func upsertSession(_ incoming: RemoteSession) {
+        let adjusted = applyLocalReadState(to: incoming)
+        defer {
+            syncPendingUnread(incoming.id)
+            flushReadSync(incoming.id)
+        }
+        guard let index = sessions.firstIndex(where: { $0.id == adjusted.id }) else {
+            sessions.append(adjusted)
             return
         }
-        var merged = incoming
+        var merged = adjusted
         let existing = sessions[index]
         if merged.title.isEmpty {
             merged.title = existing.title
@@ -710,6 +910,8 @@ final class DesktopClient: Identifiable {
 
     private func applyRunStatus(_ run: ActiveRun) -> JSONValue? {
         guard run.status == "idle" else {
+            bumpRunSequence(run.sessionId)
+            pendingRunVerifications[run.sessionId] = nil
             activeRuns[run.sessionId] = run
             trackActiveRunStatus(run)
             return nil
@@ -722,9 +924,69 @@ final class DesktopClient: Identifiable {
         {
             return nil
         }
-        activeRuns[run.sessionId] = nil
+        let previousRun = activeRuns.removeValue(forKey: run.sessionId)
         let outcome = runOutcomes.removeValue(forKey: run.sessionId)
-        disconnectedActiveRuns[run.sessionId] = nil
+        guard previousRun != nil || outcome != nil else {
+            return nil
+        }
+        pendingRunVerifications[run.sessionId] = nil
+
+        let isConfirmedRun = (previousRun != nil && !previousRun!.runId.hasPrefix(Self.optimisticRunPrefix))
+            || (!run.runId.isEmpty && !run.runId.hasPrefix(Self.optimisticRunPrefix))
+            || outcome?.sawCompletedTurn == true
+            || outcome?.sawError == true
+            || outcome?.sawAssistantActivity == true
+        let isCompactionOnly = outcome?.isExplicitCompaction == true
+            || (outcome?.sawCompaction == true
+                && outcome?.sawAssistantActivity != true
+                && outcome?.sawError != true
+                && outcome?.sawCompletedTurn != true)
+
+        let effectiveRunId = !run.runId.isEmpty ? run.runId : (outcome?.runId ?? previousRun?.runId ?? "")
+        if isConfirmedRun,
+           !isCompactionOnly,
+           !isSubAgentSession(run.sessionId),
+           outcome?.wasAborted != true,
+           !isRunRecentlyAborted(sessionId: run.sessionId, runId: effectiveRunId)
+        {
+            let observedCompletionAt = max(run.updatedAt, outcome?.latestEntryTimestamp ?? 0)
+            if outcome?.sawError == true {
+                markUnreadIfUnviewed(run.sessionId, state: .error, observedUpdatedAt: observedCompletionAt)
+            } else if outcome?.sawCompletedTurn == true {
+                markUnreadIfUnviewed(run.sessionId, state: .unread, observedUpdatedAt: observedCompletionAt)
+            } else {
+                let baseline = outcome?.baselineUpdatedAt ?? Self.baselineTimestamp(
+                    sessionUpdatedAt: session(id: run.sessionId)?.updatedAt ?? 0,
+                    runUpdatedAt: previousRun?.updatedAt ?? 0
+                )
+                storePendingVerification(
+                    PendingRunVerification(
+                        runId: effectiveRunId,
+                        baselineUpdatedAt: baseline,
+                        previousUnread: outcome?.initialUnread ?? (session(id: run.sessionId)?.unread ?? .read),
+                        runSequence: sessionRunSequences[run.sessionId, default: 0],
+                        capturedAt: Date().milliseconds,
+                        viewEpochAtCapture: sessionViewEpochs[run.sessionId, default: 0],
+                        sawCompletedTurn: false,
+                        sawError: false,
+                        unreadSuppressed: viewedSessionIds[run.sessionId] != nil,
+                        needsReconnectReconcile: false,
+                        capturedWhileRunning: false,
+                        remainingPersistenceRetries: 2
+                    ),
+                    for: run.sessionId
+                )
+                let currentGen = generation
+                let targetSessionId = run.sessionId
+                Task { @MainActor [weak self] in
+                    await self?.resolvePendingRunVerification(
+                        sessionId: targetSessionId,
+                        generation: currentGen
+                    )
+                }
+            }
+        }
+
         guard !isSubAgentSession(run.sessionId),
               let outcome,
               outcome.sawCompletedTurn,
@@ -733,7 +995,6 @@ final class DesktopClient: Identifiable {
         else {
             return nil
         }
-        let effectiveRunId = run.runId.isEmpty ? outcome.runId : run.runId
         let dedupeKey = effectiveRunId.isEmpty
             ? "\(run.sessionId)#\(Int(run.updatedAt))"
             : "\(run.sessionId)#\(effectiveRunId)"
@@ -743,6 +1004,181 @@ final class DesktopClient: Identifiable {
             "runId": .string(effectiveRunId),
             "sessionTitle": .string(session(id: run.sessionId)?.title ?? ""),
         ]
+    }
+
+    private func resolvePendingRunVerification(
+        sessionId: String,
+        generation current: Int,
+        fallbackTitle: String? = nil,
+        fallbackUpdatedAt: Double? = nil
+    ) async {
+        guard current == generation,
+              state == .connected,
+              let pending = pendingRunVerifications[sessionId]
+        else {
+            return
+        }
+        guard sessionRunSequences[sessionId, default: 0] == pending.runSequence,
+              activeRuns[sessionId] == nil,
+              !isSubAgentSession(sessionId),
+              session(id: sessionId) != nil,
+              !isRunRecentlyAborted(sessionId: sessionId, runId: pending.runId)
+        else {
+            if pendingRunVerifications[sessionId]?.runSequence == pending.runSequence {
+                pendingRunVerifications[sessionId] = nil
+            }
+            return
+        }
+
+        if pending.isResolving {
+            pendingRunVerifications[sessionId]?.retryRequestedWhileResolving = true
+            return
+        }
+
+        if pending.sawError {
+            let canMarkUnread = !pending.unreadSuppressed
+                && viewedSessionIds[sessionId] == nil
+                && sessionViewEpochs[sessionId, default: 0] == pending.viewEpochAtCapture
+            if canMarkUnread {
+                markUnreadIfUnviewed(sessionId, state: .error, preservedUpdatedAt: fallbackUpdatedAt)
+            } else {
+                recordViewedWatermark(sessionId, updatedAt: fallbackUpdatedAt ?? 0)
+            }
+            pendingRunVerifications[sessionId] = nil
+            return
+        }
+
+        pendingRunVerifications[sessionId]?.isResolving = true
+        pendingRunVerifications[sessionId]?.retryRequestedWhileResolving = false
+
+        let detail = try? await call("session:get", [.string(sessionId)])
+        guard current == generation, state == .connected else {
+            // Socket dropped while fetching entries: preserve `pendingRunVerifications[sessionId]` for reconnect.
+            if pendingRunVerifications[sessionId]?.runSequence == pending.runSequence {
+                pendingRunVerifications[sessionId]?.isResolving = false
+                pendingRunVerifications[sessionId]?.needsReconnectReconcile = true
+            }
+            return
+        }
+        guard let detail else {
+            // Transient RPC error: mark eligible for `resync()` retry while keeping the verification record.
+            if pendingRunVerifications[sessionId]?.runSequence == pending.runSequence {
+                pendingRunVerifications[sessionId]?.isResolving = false
+                pendingRunVerifications[sessionId]?.needsReconnectReconcile = true
+            }
+            return
+        }
+        guard let latest = pendingRunVerifications[sessionId],
+              latest.runSequence == pending.runSequence,
+              sessionRunSequences[sessionId, default: 0] == pending.runSequence,
+              activeRuns[sessionId] == nil,
+              !isSubAgentSession(sessionId),
+              session(id: sessionId) != nil,
+              !isRunRecentlyAborted(sessionId: sessionId, runId: pending.runId)
+        else {
+            if pendingRunVerifications[sessionId]?.runSequence == pending.runSequence {
+                pendingRunVerifications[sessionId] = nil
+            }
+            return
+        }
+
+        let entries = detail["entries"]?.arrayValue != nil
+            ? (detail["entries"]?.decodeList(ConversationEntry.self) ?? [])
+            : nil
+        let classification: OfflineTerminalOutcome = entries.map {
+            Self.classifyTerminalOutcome(of: $0, after: pending.baselineUpdatedAt)
+        } ?? .notYetPersisted
+
+        let canMarkUnread = !latest.unreadSuppressed
+            && viewedSessionIds[sessionId] == nil
+            && sessionViewEpochs[sessionId, default: 0] == latest.viewEpochAtCapture
+
+        let latestEntryTimestamp = entries?.map { max($0.completedAt ?? 0, $0.createdAt) }.max() ?? 0
+        let offlinePreservedUpdatedAt = fallbackUpdatedAt.map { max($0, latestEntryTimestamp) }
+
+        switch classification {
+        case .completed:
+            pendingRunVerifications[sessionId] = nil
+            if canMarkUnread {
+                markUnreadIfUnviewed(
+                    sessionId,
+                    state: .unread,
+                    observedUpdatedAt: latestEntryTimestamp,
+                    preservedUpdatedAt: offlinePreservedUpdatedAt
+                )
+            } else {
+                if let index = sessions.firstIndex(where: { $0.id == sessionId }),
+                   latestEntryTimestamp > sessions[index].updatedAt
+                {
+                    sessions[index].updatedAt = latestEntryTimestamp
+                }
+                recordViewedWatermark(sessionId, updatedAt: max(latestEntryTimestamp, fallbackUpdatedAt ?? 0))
+            }
+            let updatedAt = session(id: sessionId)?.updatedAt ?? fallbackUpdatedAt ?? 0
+            let title = session(id: sessionId)?.title ?? fallbackTitle ?? ""
+            let dedupeKey = pending.runId.isEmpty
+                ? "\(sessionId)#verified-\(Int(updatedAt))"
+                : "\(sessionId)#\(pending.runId)"
+            if markRunNotified(dedupeKey) {
+                emit(DesktopEvent(
+                    kind: DesktopEvent.turnCompleted,
+                    payload: [
+                        "sessionId": .string(sessionId),
+                        "runId": .string(pending.runId),
+                        "sessionTitle": .string(title),
+                    ]
+                ))
+            }
+        case .error:
+            pendingRunVerifications[sessionId] = nil
+            if canMarkUnread {
+                markUnreadIfUnviewed(
+                    sessionId,
+                    state: .error,
+                    observedUpdatedAt: latestEntryTimestamp,
+                    preservedUpdatedAt: offlinePreservedUpdatedAt
+                )
+            } else {
+                if let index = sessions.firstIndex(where: { $0.id == sessionId }),
+                   latestEntryTimestamp > sessions[index].updatedAt
+                {
+                    sessions[index].updatedAt = latestEntryTimestamp
+                }
+                recordViewedWatermark(sessionId, updatedAt: max(latestEntryTimestamp, fallbackUpdatedAt ?? 0))
+            }
+        case .settledIncomplete:
+            pendingRunVerifications[sessionId] = nil
+        case .notYetPersisted:
+            let retryImmediately = latest.retryRequestedWhileResolving
+            pendingRunVerifications[sessionId]?.isResolving = false
+            pendingRunVerifications[sessionId]?.retryRequestedWhileResolving = false
+            pendingRunVerifications[sessionId]?.needsReconnectReconcile = true
+            if latest.remainingPersistenceRetries > 0 {
+                pendingRunVerifications[sessionId]?.remainingPersistenceRetries -= 1
+                Task { @MainActor [weak self] in
+                    if !retryImmediately {
+                        try? await Task.sleep(for: .milliseconds(120))
+                    }
+                    await self?.resolvePendingRunVerification(
+                        sessionId: sessionId,
+                        generation: current,
+                        fallbackTitle: fallbackTitle,
+                        fallbackUpdatedAt: fallbackUpdatedAt
+                    )
+                }
+            } else if retryImmediately {
+                // Keep the verification record passive after short-term polling ends so a late
+                // `session:entries-updated` or future `resync()` can still resolve it.
+                Task { @MainActor [weak self] in
+                    await self?.resolvePendingRunVerification(
+                        sessionId: sessionId,
+                        generation: current,
+                        fallbackTitle: fallbackTitle,
+                        fallbackUpdatedAt: fallbackUpdatedAt
+                    )
+                }
+            }
+        }
     }
 
     private func isSubAgentSession(_ sessionId: String) -> Bool {
@@ -759,19 +1195,46 @@ final class DesktopClient: Identifiable {
             runOutcomes[run.sessionId] = nil
             return
         }
+        let currentSession = session(id: run.sessionId)
+        let baseline = Self.baselineTimestamp(
+            sessionUpdatedAt: currentSession?.updatedAt ?? 0,
+            runUpdatedAt: run.updatedAt
+        )
+        let initialUnread = currentSession?.unread ?? .read
         guard var existing = runOutcomes[run.sessionId] else {
-            runOutcomes[run.sessionId] = TrackedRunOutcome(runId: run.runId)
+            if !run.runId.isEmpty, recentlyAbortedRuns[run.sessionId]?.runId != run.runId {
+                recentlyAbortedRuns[run.sessionId] = nil
+            }
+            runOutcomes[run.sessionId] = TrackedRunOutcome(
+                runId: run.runId,
+                baselineUpdatedAt: baseline,
+                initialUnread: initialUnread,
+                sawError: run.status == "error"
+            )
             return
+        }
+        if run.status == "error" {
+            existing.sawError = true
+            runOutcomes[run.sessionId] = existing
         }
         if existing.runId.isEmpty || existing.runId.hasPrefix(Self.optimisticRunPrefix) {
             if !run.runId.isEmpty {
+                if recentlyAbortedRuns[run.sessionId]?.runId != run.runId {
+                    recentlyAbortedRuns[run.sessionId] = nil
+                }
                 existing.runId = run.runId
                 runOutcomes[run.sessionId] = existing
             }
             return
         }
         if !run.runId.isEmpty, run.runId != existing.runId, !run.runId.hasPrefix(Self.optimisticRunPrefix) {
-            runOutcomes[run.sessionId] = TrackedRunOutcome(runId: run.runId)
+            recentlyAbortedRuns[run.sessionId] = nil
+            runOutcomes[run.sessionId] = TrackedRunOutcome(
+                runId: run.runId,
+                baselineUpdatedAt: baseline,
+                initialUnread: initialUnread,
+                sawError: run.status == "error"
+            )
         }
     }
 
@@ -787,6 +1250,9 @@ final class DesktopClient: Identifiable {
             return
         }
         let streamRunId = payload["runId"]?.stringValue ?? event["runId"]?.stringValue ?? ""
+        let currentSession = session(id: sessionId)
+        let currentUpdatedAt = currentSession?.updatedAt ?? 0
+        let initialUnread = currentSession?.unread ?? .read
         var outcome: TrackedRunOutcome
         if let existing = runOutcomes[sessionId] {
             if !streamRunId.isEmpty,
@@ -794,22 +1260,51 @@ final class DesktopClient: Identifiable {
                !existing.runId.hasPrefix(Self.optimisticRunPrefix),
                existing.runId != streamRunId
             {
-                outcome = TrackedRunOutcome(runId: streamRunId)
+                bumpRunSequence(sessionId)
+                pendingRunVerifications[sessionId] = nil
+                recentlyAbortedRuns[sessionId] = nil
+                outcome = TrackedRunOutcome(
+                    runId: streamRunId,
+                    baselineUpdatedAt: currentUpdatedAt,
+                    initialUnread: initialUnread
+                )
             } else {
                 outcome = existing
                 if !streamRunId.isEmpty && (outcome.runId.isEmpty || outcome.runId.hasPrefix(Self.optimisticRunPrefix)) {
+                    if recentlyAbortedRuns[sessionId]?.runId != streamRunId {
+                        recentlyAbortedRuns[sessionId] = nil
+                    }
                     outcome.runId = streamRunId
                 }
             }
         } else {
-            outcome = TrackedRunOutcome(runId: streamRunId)
+            bumpRunSequence(sessionId)
+            pendingRunVerifications[sessionId] = nil
+            if !streamRunId.isEmpty, recentlyAbortedRuns[sessionId]?.runId != streamRunId {
+                recentlyAbortedRuns[sessionId] = nil
+            }
+            outcome = TrackedRunOutcome(
+                runId: streamRunId,
+                baselineUpdatedAt: currentUpdatedAt,
+                initialUnread: initialUnread
+            )
         }
 
         switch event["type"]?.stringValue {
         case "assistant-start", "tool-start":
+            outcome.sawAssistantActivity = true
             outcome.sawCompletedTurn = false
+        case "assistant-delta", "tool-end":
+            outcome.sawAssistantActivity = true
+        case "compaction-start", "compaction-end":
+            outcome.sawCompaction = true
         case "assistant-end":
+            outcome.sawAssistantActivity = true
             let entry = event["entry"]
+            let entryTs = max(entry?["completedAt"]?.doubleValue ?? 0, entry?["createdAt"]?.doubleValue ?? 0)
+            if entryTs > outcome.latestEntryTimestamp {
+                outcome.latestEntryTimestamp = entryTs
+            }
             let status = entry?["status"]?.stringValue ?? ""
             let stopReason = entry?["stopReason"]?.stringValue ?? "stop"
             let errorMessage = entry?["errorMessage"]?.stringValue ?? ""
@@ -824,6 +1319,9 @@ final class DesktopClient: Identifiable {
             } else if stopReason == "toolUse" {
                 outcome.sawCompletedTurn = false
             }
+        case "aborted":
+            outcome.wasAborted = true
+            outcome.sawCompletedTurn = false
         case "error":
             outcome.sawError = true
             outcome.sawCompletedTurn = false
@@ -833,70 +1331,250 @@ final class DesktopClient: Identifiable {
         runOutcomes[sessionId] = outcome
     }
 
+    private func isRunRecentlyAborted(sessionId: String, runId: String?) -> Bool {
+        guard let record = recentlyAbortedRuns[sessionId] else { return false }
+        if Date().milliseconds - record.timestamp >= Self.abortSuppressionWindowMs {
+            recentlyAbortedRuns[sessionId] = nil
+            return false
+        }
+        if let abortedRunId = record.runId, let runId, !runId.isEmpty, abortedRunId != runId {
+            return false
+        }
+        return true
+    }
+
     private func markSessionAborted(_ sessionId: String) {
-        recentlyAbortedAt[sessionId] = Date().milliseconds
+        bumpRunSequence(sessionId)
+        let candidateRunId = activeRuns[sessionId]?.runId ?? runOutcomes[sessionId]?.runId
+        let normalizedRunId = (candidateRunId?.isEmpty == false) ? candidateRunId : nil
+        recentlyAbortedRuns[sessionId] = AbortedRunRecord(runId: normalizedRunId, timestamp: Date().milliseconds)
         if runOutcomes[sessionId] != nil {
             runOutcomes[sessionId]?.wasAborted = true
             runOutcomes[sessionId]?.sawCompletedTurn = false
         } else if let active = activeRuns[sessionId] {
             runOutcomes[sessionId] = TrackedRunOutcome(runId: active.runId, wasAborted: true)
         }
-        disconnectedActiveRuns[sessionId] = nil
+        pendingRunVerifications[sessionId] = nil
     }
 
     private func snapshotInterruptedRunsIfNeeded() {
         guard hasSynced, shouldRun else { return }
+        for sessionId in Array(pendingRunVerifications.keys) {
+            pendingRunVerifications[sessionId]?.isResolving = false
+            pendingRunVerifications[sessionId]?.retryRequestedWhileResolving = false
+            pendingRunVerifications[sessionId]?.needsReconnectReconcile = true
+        }
         for (sessionId, run) in activeRuns {
             guard !run.runId.hasPrefix(Self.optimisticRunPrefix),
                   !isSubAgentSession(sessionId),
-                  disconnectedActiveRuns[sessionId] == nil
+                  pendingRunVerifications[sessionId] == nil
             else {
                 continue
             }
             let outcome = runOutcomes[sessionId]
-            if outcome?.wasAborted == true || outcome?.sawError == true {
+            if outcome?.wasAborted == true || outcome?.isExplicitCompaction == true {
                 continue
             }
-            disconnectedActiveRuns[sessionId] = run.runId
+            let baseline = outcome?.baselineUpdatedAt ?? Self.baselineTimestamp(
+                sessionUpdatedAt: session(id: sessionId)?.updatedAt ?? 0,
+                runUpdatedAt: run.updatedAt
+            )
+            storePendingVerification(
+                PendingRunVerification(
+                    runId: run.runId,
+                    baselineUpdatedAt: baseline,
+                    previousUnread: outcome?.initialUnread ?? (session(id: sessionId)?.unread ?? .read),
+                    runSequence: sessionRunSequences[sessionId, default: 0],
+                    capturedAt: Date().milliseconds,
+                    viewEpochAtCapture: sessionViewEpochs[sessionId, default: 0],
+                    sawCompletedTurn: outcome?.sawCompletedTurn == true,
+                    sawError: outcome?.sawError == true,
+                    unreadSuppressed: false,
+                    needsReconnectReconcile: true,
+                    capturedWhileRunning: true,
+                    remainingPersistenceRetries: 1
+                ),
+                for: sessionId
+            )
         }
     }
 
-    private func reconcileInterruptedRunsAfterResync(currentRuns: [String: ActiveRun]) {
+    private func ensureTrackedOutcomes(for runs: [String: ActiveRun], sessionsById: [String: RemoteSession] = [:]) {
+        for (sessionId, run) in runs where !isSubAgentSession(sessionId) {
+            guard activeRuns[sessionId]?.runId == run.runId else {
+                continue
+            }
+            let targetSession = sessionsById[sessionId] ?? session(id: sessionId)
+            let sessUpdatedAt = targetSession?.updatedAt ?? 0
+            let initialUnread = targetSession?.unread ?? .read
+            let baseline = Self.baselineTimestamp(sessionUpdatedAt: sessUpdatedAt, runUpdatedAt: run.updatedAt)
+            if var existing = runOutcomes[sessionId] {
+                if !run.runId.isEmpty,
+                   !existing.runId.isEmpty,
+                   !existing.runId.hasPrefix(Self.optimisticRunPrefix),
+                   existing.runId != run.runId
+                {
+                    bumpRunSequence(sessionId)
+                    pendingRunVerifications[sessionId] = nil
+                    recentlyAbortedRuns[sessionId] = nil
+                    runOutcomes[sessionId] = TrackedRunOutcome(
+                        runId: run.runId,
+                        baselineUpdatedAt: baseline,
+                        initialUnread: initialUnread,
+                        sawError: run.status == "error"
+                    )
+                } else {
+                    if !run.runId.isEmpty && (existing.runId.isEmpty || existing.runId.hasPrefix(Self.optimisticRunPrefix)) {
+                        if recentlyAbortedRuns[sessionId]?.runId != run.runId {
+                            recentlyAbortedRuns[sessionId] = nil
+                        }
+                        existing.runId = run.runId
+                    }
+                    if run.status == "error" {
+                        existing.sawError = true
+                    }
+                    if existing.baselineUpdatedAt == 0, baseline > 0 {
+                        existing.baselineUpdatedAt = baseline
+                        existing.initialUnread = initialUnread
+                    }
+                    runOutcomes[sessionId] = existing
+                }
+            } else {
+                runOutcomes[sessionId] = TrackedRunOutcome(
+                    runId: run.runId,
+                    baselineUpdatedAt: baseline,
+                    initialUnread: initialUnread,
+                    sawError: run.status == "error"
+                )
+            }
+        }
+    }
+
+    private func reconcileInterruptedRunsAfterResync(
+        currentRuns: [String: ActiveRun],
+        rawSessions: [RemoteSession],
+        generation current: Int
+    ) async {
         let now = Date().milliseconds
-        recentlyAbortedAt = recentlyAbortedAt.filter { now - $0.value < Self.abortSuppressionWindowMs }
+        recentlyAbortedRuns = recentlyAbortedRuns.filter { now - $0.value.timestamp < Self.abortSuppressionWindowMs }
 
-        let interrupted = disconnectedActiveRuns
-        disconnectedActiveRuns.removeAll()
+        let rawById = Dictionary(uniqueKeysWithValues: rawSessions.map { ($0.id, $0) })
+        ensureTrackedOutcomes(for: currentRuns, sessionsById: rawById)
 
-        for (sessionId, run) in currentRuns where !isSubAgentSession(sessionId) {
-            if runOutcomes[sessionId] == nil {
-                runOutcomes[sessionId] = TrackedRunOutcome(runId: run.runId)
+        for sessionId in Array(pendingRunVerifications.keys) where pendingRunVerifications[sessionId]?.needsReconnectReconcile == true {
+            if pendingRunVerifications[sessionId]?.capturedWhileRunning == true {
+                pendingRunVerifications[sessionId]?.viewEpochAtCapture = sessionViewEpochs[sessionId, default: 0]
+                pendingRunVerifications[sessionId]?.capturedWhileRunning = false
+            }
+            if viewedSessionIds[sessionId] != nil {
+                pendingRunVerifications[sessionId]?.unreadSuppressed = true
             }
         }
 
-        for (sessionId, oldRunId) in interrupted {
-            if currentRuns[sessionId] != nil {
-                continue
-            }
-            runOutcomes[sessionId] = nil
-            guard recentlyAbortedAt[sessionId] == nil,
-                  !isSubAgentSession(sessionId),
-                  let session = session(id: sessionId),
-                  session.unread == .unread
+        let orderedVerifications = pendingRunVerifications
+            .filter { $0.value.needsReconnectReconcile }
+            .sorted { $0.key < $1.key }
+        for (sessionId, snapshot) in orderedVerifications {
+            guard let latestPending = pendingRunVerifications[sessionId],
+                  latestPending.needsReconnectReconcile,
+                  latestPending.runSequence == snapshot.runSequence
             else {
                 continue
             }
-            let dedupeKey = oldRunId.isEmpty ? "\(sessionId)#resync-\(Int(session.updatedAt))" : "\(sessionId)#\(oldRunId)"
-            guard markRunNotified(dedupeKey) else { continue }
-            emit(DesktopEvent(
-                kind: DesktopEvent.turnCompleted,
-                payload: [
-                    "sessionId": .string(sessionId),
-                    "runId": .string(oldRunId),
-                    "sessionTitle": .string(session.title),
-                ]
-            ))
+            if activeRuns[sessionId] != nil {
+                pendingRunVerifications[sessionId] = nil
+                continue
+            }
+            if runOutcomes[sessionId]?.runId.isEmpty == true || runOutcomes[sessionId]?.runId == snapshot.runId {
+                runOutcomes[sessionId] = nil
+            }
+            guard sessionRunSequences[sessionId, default: 0] == snapshot.runSequence,
+                  !isRunRecentlyAborted(sessionId: sessionId, runId: snapshot.runId),
+                  !isSubAgentSession(sessionId),
+                  let rawSession = rawById[sessionId] ?? session(id: sessionId)
+            else {
+                pendingRunVerifications[sessionId] = nil
+                continue
+            }
+
+            if rawSession.unread == .error,
+               latestPending.previousUnread != .error,
+               !latestPending.sawCompletedTurn
+            {
+                pendingRunVerifications[sessionId] = nil
+                continue
+            }
+            if rawSession.unread == .unread,
+               latestPending.previousUnread != .unread,
+               !latestPending.sawError
+            {
+                pendingRunVerifications[sessionId] = nil
+                let oldRunId = snapshot.runId
+                let dedupeKey = oldRunId.isEmpty
+                    ? "\(sessionId)#resync-\(Int(rawSession.updatedAt))"
+                    : "\(sessionId)#\(oldRunId)"
+                guard markRunNotified(dedupeKey) else { continue }
+                emit(DesktopEvent(
+                    kind: DesktopEvent.turnCompleted,
+                    payload: [
+                        "sessionId": .string(sessionId),
+                        "runId": .string(oldRunId),
+                        "sessionTitle": .string(session(id: sessionId)?.title ?? rawSession.title),
+                    ]
+                ))
+                continue
+            }
+
+            await resolvePendingRunVerification(
+                sessionId: sessionId,
+                generation: current,
+                fallbackTitle: rawSession.title,
+                fallbackUpdatedAt: rawSession.updatedAt
+            )
+            guard current == generation, state == .connected else {
+                return
+            }
         }
+    }
+
+    private enum OfflineTerminalOutcome {
+        case completed
+        case error
+        case settledIncomplete
+        case notYetPersisted
+    }
+
+    private static func classifyTerminalOutcome(
+        of entries: [ConversationEntry],
+        after previousUpdatedAt: Double
+    ) -> OfflineTerminalOutcome {
+        // Do not skip trailing `.compaction`: a run ending with compaction was `/compact`, not an assistant turn.
+        guard let last = entries.last(where: { $0.kind != .unknown }) else {
+            return .notYetPersisted
+        }
+        let terminalTimestamp = max(last.completedAt ?? 0, last.createdAt)
+        if previousUpdatedAt > 0, terminalTimestamp <= previousUpdatedAt {
+            return .notYetPersisted
+        }
+        guard last.kind == .assistant else {
+            return .notYetPersisted
+        }
+        let errorMessage = last.errorMessage ?? ""
+        if last.status == "aborted"
+            || last.stopReason == "aborted"
+            || last.interrupted
+            || errorMessage == "Response stream ended prematurely before completion"
+            || errorMessage == "Interrupted by session restart"
+        {
+            return .settledIncomplete
+        }
+        if last.status == "error" || last.stopReason == "error" || !errorMessage.isEmpty {
+            return .error
+        }
+        if last.status == "done", last.stopReason != "toolUse", last.stopReason != "pending" {
+            return .completed
+        }
+        return .notYetPersisted
     }
 
     private func markRunNotified(_ key: String) -> Bool {
@@ -912,8 +1590,16 @@ final class DesktopClient: Identifiable {
 
     private func resetTurnOutcomeTracking() {
         runOutcomes.removeAll()
-        disconnectedActiveRuns.removeAll()
-        recentlyAbortedAt.removeAll()
+        pendingRunVerifications.removeAll()
+        recentlyAbortedRuns.removeAll()
+        pendingUnreadStates.removeAll()
+        readSyncIntents.removeAll()
+        viewedWatermarks.removeAll()
+        flushedAmbiguousReads.removeAll()
+        inFlightUnreadSyncSequences.removeAll()
+        inFlightManualReadIds.removeAll()
+        sessionRunSequences.removeAll()
+        sessionViewEpochs.removeAll()
     }
 
     // MARK: - Listeners
@@ -1037,6 +1723,9 @@ final class DesktopClient: Identifiable {
     func resync() async {
         guard state == .connected else { return }
         let wasSynced = hasSynced
+        if !wasSynced {
+            pendingRunVerifications.removeAll()
+        }
         // Results of a superseded connection must not overwrite newer data.
         let current = generation
         let runsValue = try? await call("session:getActiveRuns")
@@ -1049,6 +1738,7 @@ final class DesktopClient: Identifiable {
             }
             activeRuns = runs
             syncedRuns = runs
+            ensureTrackedOutcomes(for: runs)
         }
         let projectsValue = try? await call("kvstore:get", ["projects"])
         guard current == generation else { return }
@@ -1057,10 +1747,15 @@ final class DesktopClient: Identifiable {
         }
         let sessionsValue = try? await call("session:listSessions")
         guard current == generation else { return }
-        var didSyncSessions = false
+        var syncedRawSessions: [RemoteSession]?
         if let sessionsValue, sessionsValue.arrayValue != nil {
-            sessions = sessionsValue.decodeList(RemoteSession.self)
-            didSyncSessions = true
+            let decoded = sessionsValue.decodeList(RemoteSession.self)
+            syncedRawSessions = decoded
+            sessions = decoded.map { applyLocalReadState(to: $0) }
+            if let syncedRuns {
+                let rawById = Dictionary(uniqueKeysWithValues: decoded.map { ($0.id, $0) })
+                ensureTrackedOutcomes(for: syncedRuns, sessionsById: rawById)
+            }
         }
         let modelsValue = try? await call("kvstore:get", ["cachedModels"])
         guard current == generation else { return }
@@ -1076,24 +1771,29 @@ final class DesktopClient: Identifiable {
         hasSynced = true
         if wasSynced {
             // Only reconcile and consume interrupted snapshots when both runs and sessions succeeded.
-            if let syncedRuns, didSyncSessions {
-                reconcileInterruptedRunsAfterResync(currentRuns: syncedRuns)
+            if let syncedRuns, let syncedRawSessions {
+                await reconcileInterruptedRunsAfterResync(
+                    currentRuns: syncedRuns,
+                    rawSessions: syncedRawSessions,
+                    generation: current
+                )
+                guard current == generation, state == .connected else { return }
             } else if let syncedRuns {
-                for (sessionId, run) in syncedRuns where !isSubAgentSession(sessionId) && runOutcomes[sessionId] == nil {
-                    runOutcomes[sessionId] = TrackedRunOutcome(runId: run.runId)
-                }
+                ensureTrackedOutcomes(for: syncedRuns)
             }
-        } else {
-            disconnectedActiveRuns.removeAll()
-            if let syncedRuns {
-                for (sessionId, run) in syncedRuns where !isSubAgentSession(sessionId) && runOutcomes[sessionId] == nil {
-                    runOutcomes[sessionId] = TrackedRunOutcome(runId: run.runId)
-                }
-            }
+        } else if let syncedRuns {
+            ensureTrackedOutcomes(for: syncedRuns)
         }
         refreshSkillUsage()
-        for sessionId in viewedSessionIds.keys {
-            markReadIfViewed(sessionId)
+        for sessionId in Array(flushedAmbiguousReads.keys).sorted() {
+            await recheckFlushedAmbiguousRead(sessionId: sessionId, generation: current)
+            guard current == generation, state == .connected else { return }
+        }
+        for sessionId in Array(pendingUnreadStates.keys) {
+            syncPendingUnread(sessionId)
+        }
+        for sessionId in Set(viewedSessionIds.keys).union(readSyncIntents.keys) {
+            flushReadSync(sessionId)
         }
         emit(DesktopEvent(kind: DesktopEvent.synced, payload: .null))
     }
@@ -1324,7 +2024,7 @@ final class DesktopClient: Identifiable {
             "text": "",
             "action": "compact",
         ]
-        try await callDelegateRun(request, sessionId: sessionId, pendingId: requestId)
+        try await callDelegateRun(request, sessionId: sessionId, pendingId: requestId, isCompaction: true)
     }
 
     // Asks the desktop to resume an interrupted or paused conversation turn (desktop `resumeSession`).
@@ -1344,15 +2044,24 @@ final class DesktopClient: Identifiable {
         _ request: JSONValue,
         sessionId: String,
         pendingId: String,
-        encodesInBackground: Bool = false
+        encodesInBackground: Bool = false,
+        isCompaction: Bool = false
     ) async throws {
+        bumpRunSequence(sessionId)
+        recentlyAbortedRuns[sessionId] = nil
+        pendingRunVerifications[sessionId] = nil
         var optimisticRunId: String?
         if activeRuns[sessionId] == nil {
             let runId = Self.optimisticRunPrefix + pendingId
             optimisticRunId = runId
             activeRuns[sessionId] = ActiveRun(sessionId: sessionId, runId: runId, status: "running")
             if !isSubAgentSession(sessionId), runOutcomes[sessionId] == nil {
-                runOutcomes[sessionId] = TrackedRunOutcome(runId: runId)
+                runOutcomes[sessionId] = TrackedRunOutcome(
+                    runId: runId,
+                    baselineUpdatedAt: session(id: sessionId)?.updatedAt ?? 0,
+                    sawCompaction: isCompaction,
+                    isExplicitCompaction: isCompaction
+                )
             }
             emit(DesktopEvent(kind: DesktopEvent.localRunsChanged, payload: ["sessionId": .string(sessionId)]))
             Task { @MainActor [weak self] in
@@ -1429,14 +2138,84 @@ final class DesktopClient: Identifiable {
 
     // Read state changes keep the list position (desktop `markRead` / `markUnreadManually`).
     func setSessionUnread(id sessionId: String, unread: Bool) async throws {
-        try await setSessionMeta(sessionId, ["unread": .bool(unread)], keepsUpdatedAt: true)
+        bumpViewEpoch(sessionId)
+        viewedWatermarks[sessionId] = nil
+        flushedAmbiguousReads[sessionId] = nil
+        let epochAtStart = sessionViewEpochs[sessionId, default: 0]
+        let runSeqAtStart = sessionRunSequences[sessionId, default: 0]
+        let genAtStart = generation
+        pendingRunVerifications[sessionId]?.capturedWhileRunning = false
+        pendingRunVerifications[sessionId]?.unreadSuppressed = true
+        let previousPending = pendingUnreadStates.removeValue(forKey: sessionId)
+        let previousReadIntent = readSyncIntents.removeValue(forKey: sessionId)
+        let previousUnread = session(id: sessionId)?.unread
+        if let index = sessions.firstIndex(where: { $0.id == sessionId }) {
+            sessions[index].unread = unread ? .unread : .read
+        }
+        if !unread {
+            inFlightManualReadIds.insert(sessionId)
+        }
+        do {
+            try await setSessionMeta(sessionId, ["unread": .bool(unread)], keepsUpdatedAt: true)
+            inFlightManualReadIds.remove(sessionId)
+            if readSyncIntents[sessionId] != nil || viewedSessionIds[sessionId] != nil {
+                flushReadSync(sessionId)
+            }
+        } catch {
+            inFlightManualReadIds.remove(sessionId)
+            if generation == genAtStart,
+               sessionRunSequences[sessionId, default: 0] == runSeqAtStart
+            {
+                if viewedSessionIds[sessionId] != nil || readSyncIntents[sessionId] != nil {
+                    if let index = sessions.firstIndex(where: { $0.id == sessionId }) {
+                        sessions[index].unread = .read
+                    }
+                    if readSyncIntents[sessionId] == nil {
+                        requestReadSync(sessionId)
+                    }
+                    flushReadSync(sessionId)
+                } else if sessionViewEpochs[sessionId, default: 0] == epochAtStart {
+                    if let previousPending {
+                        pendingUnreadStates[sessionId] = previousPending
+                    }
+                    if let previousReadIntent, readSyncIntents[sessionId] == nil {
+                        readSyncIntents[sessionId] = previousReadIntent
+                    }
+                    if let previousUnread, let index = sessions.firstIndex(where: { $0.id == sessionId }) {
+                        sessions[index].unread = previousUnread
+                    }
+                }
+            }
+            throw error
+        }
     }
 
     // A shown conversation stays read, as the desktop's current conversation does. Checked again
     // whenever its metadata changes and after every resync, so failed or offline marks are retried.
     func beginViewing(sessionId: String) {
+        if state == .connected, pendingRunVerifications[sessionId]?.capturedWhileRunning != true {
+            bumpViewEpoch(sessionId)
+            pendingRunVerifications[sessionId]?.unreadSuppressed = true
+            flushedAmbiguousReads[sessionId] = nil
+        }
         viewedSessionIds[sessionId, default: 0] += 1
-        markReadIfViewed(sessionId)
+        let hadPendingUnread = pendingUnreadStates.removeValue(forKey: sessionId) != nil
+        let wasUnreadInList: Bool
+        if let index = sessions.firstIndex(where: { $0.id == sessionId }), sessions[index].isUnread {
+            sessions[index].unread = .read
+            wasUnreadInList = true
+        } else {
+            wasUnreadInList = false
+        }
+        if wasUnreadInList
+            || hadPendingUnread
+            || inFlightUnreadSyncSequences[sessionId] != nil
+            || inFlightManualReadIds.contains(sessionId)
+        {
+            recordViewedWatermark(sessionId)
+            requestReadSync(sessionId)
+        }
+        flushReadSync(sessionId)
     }
 
     func endViewing(sessionId: String) {
@@ -1444,23 +2223,199 @@ final class DesktopClient: Identifiable {
         viewedSessionIds[sessionId] = count > 0 ? count : nil
     }
 
-    private func markReadIfViewed(_ sessionId: String) {
-        guard viewedSessionIds[sessionId] != nil,
+    private func markUnreadIfUnviewed(
+        _ sessionId: String,
+        state: UnreadState,
+        observedUpdatedAt: Double = 0,
+        preservedUpdatedAt: Double? = nil
+    ) {
+        guard state != .read else { return }
+        let candidateUpdatedAt = max(observedUpdatedAt, preservedUpdatedAt ?? 0)
+        if let index = sessions.firstIndex(where: { $0.id == sessionId }),
+           candidateUpdatedAt > sessions[index].updatedAt
+        {
+            sessions[index].updatedAt = candidateUpdatedAt
+        }
+        let currentRunSeq = sessionRunSequences[sessionId, default: 0]
+        guard viewedSessionIds[sessionId] == nil else {
+            recordViewedWatermark(sessionId, updatedAt: candidateUpdatedAt)
+            return
+        }
+        viewedWatermarks[sessionId] = nil
+        readSyncIntents[sessionId] = nil
+        pendingUnreadStates[sessionId] = PendingUnreadSync(
+            state: state,
+            preservedUpdatedAt: preservedUpdatedAt,
+            runSequence: currentRunSeq
+        )
+        if let index = sessions.firstIndex(where: { $0.id == sessionId }) {
+            sessions[index].unread = state
+        }
+        syncPendingUnread(sessionId)
+    }
+
+    private func syncPendingUnread(_ sessionId: String) {
+        guard viewedSessionIds[sessionId] == nil else {
+            pendingUnreadStates[sessionId] = nil
+            return
+        }
+        guard let target = pendingUnreadStates[sessionId],
+              target.state != .read,
+              session(id: sessionId) != nil,
               isConnected,
-              session(id: sessionId)?.isUnread == true,
+              inFlightUnreadSyncSequences[sessionId] == nil,
               !pendingReadIds.contains(sessionId)
         else {
             return
         }
-        pendingReadIds.insert(sessionId)
+        inFlightUnreadSyncSequences[sessionId] = target.runSequence
+        let current = generation
+        let rawValue: JSONValue = target.state == .error ? .string("error") : .bool(true)
+        var fields: [String: JSONValue] = ["unread": rawValue]
+        if let preservedUpdatedAt = target.preservedUpdatedAt, preservedUpdatedAt > 0 {
+            fields["updatedAt"] = .number(preservedUpdatedAt)
+        }
         Task {
-            let succeeded = (try? await setSessionUnread(id: sessionId, unread: false)) != nil
-            pendingReadIds.remove(sessionId)
-            // Catch an unread broadcast that arrived mid-request; failures wait for the next event.
-            if succeeded {
-                markReadIfViewed(sessionId)
+            let succeeded = (try? await setSessionMeta(sessionId, fields, keepsUpdatedAt: false)) != nil
+            inFlightUnreadSyncSequences[sessionId] = nil
+            guard current == generation else { return }
+            if succeeded, pendingUnreadStates[sessionId] == target {
+                pendingUnreadStates[sessionId] = nil
+            }
+            if readSyncIntents[sessionId] != nil || viewedSessionIds[sessionId] != nil {
+                flushReadSync(sessionId)
+            } else if succeeded, pendingUnreadStates[sessionId] != nil {
+                syncPendingUnread(sessionId)
             }
         }
+    }
+
+    private func flushReadSync(_ sessionId: String) {
+        if viewedSessionIds[sessionId] != nil,
+           let index = sessions.firstIndex(where: { $0.id == sessionId }),
+           sessions[index].isUnread
+        {
+            let targetUpdatedAt = sessions[index].updatedAt
+            sessions[index].unread = .read
+            requestReadSync(sessionId, upTo: targetUpdatedAt)
+        }
+        guard let intentAtStart = readSyncIntents[sessionId],
+              session(id: sessionId) != nil,
+              isConnected,
+              !pendingReadIds.contains(sessionId),
+              inFlightUnreadSyncSequences[sessionId] == nil,
+              !inFlightManualReadIds.contains(sessionId)
+        else {
+            return
+        }
+        pendingReadIds.insert(sessionId)
+        let current = generation
+        Task {
+            if let serverUnread = intentAtStart.pendingServerUnread,
+               viewedSessionIds[sessionId] == nil
+            {
+                let detail = try? await call("session:get", [.string(sessionId)])
+                guard current == generation, state == .connected else {
+                    pendingReadIds.remove(sessionId)
+                    return
+                }
+                guard let detail, detail["entries"]?.arrayValue != nil else {
+                    pendingReadIds.remove(sessionId)
+                    return
+                }
+                if viewedSessionIds[sessionId] == nil,
+                   readSyncIntents[sessionId]?.revision == intentAtStart.revision
+                {
+                    let entries = detail["entries"]?.decodeList(ConversationEntry.self) ?? []
+                    let outcome = Self.classifyTerminalOutcome(of: entries, after: intentAtStart.maxUpdatedAt)
+                    let hasNewerTurnActivity = entries.contains { entry in
+                        guard entry.kind != .unknown, entry.kind != .compaction else { return false }
+                        return max(entry.completedAt ?? 0, entry.createdAt) > intentAtStart.maxUpdatedAt
+                    }
+                    if outcome == .completed || outcome == .error || (hasNewerTurnActivity && outcome != .settledIncomplete) {
+                        pendingReadIds.remove(sessionId)
+                        readSyncIntents[sessionId] = nil
+                        let restored: UnreadState = outcome == .error
+                            ? .error
+                            : (outcome == .completed ? .unread : serverUnread)
+                        let latestEntryTimestamp = entries.map { max($0.completedAt ?? 0, $0.createdAt) }.max() ?? 0
+                        let repairedUpdatedAt = max(session(id: sessionId)?.updatedAt ?? 0, latestEntryTimestamp)
+                        markUnreadIfUnviewed(sessionId, state: restored, preservedUpdatedAt: repairedUpdatedAt)
+                        return
+                    }
+                    readSyncIntents[sessionId]?.pendingServerUnread = nil
+                    if flushedAmbiguousReads[sessionId] == nil,
+                       flushedAmbiguousReads.count >= Self.maxPendingVerifications,
+                       let oldestKey = flushedAmbiguousReads.min(by: { $0.value.capturedAt < $1.value.capturedAt })?.key
+                    {
+                        flushedAmbiguousReads.removeValue(forKey: oldestKey)
+                    }
+                    flushedAmbiguousReads[sessionId] = FlushedAmbiguousRead(
+                        maxUpdatedAt: intentAtStart.maxUpdatedAt,
+                        fallbackUnread: serverUnread,
+                        viewEpoch: sessionViewEpochs[sessionId, default: 0],
+                        capturedAt: Date().milliseconds
+                    )
+                }
+            }
+
+            let succeeded = (try? await setSessionMeta(sessionId, ["unread": .bool(false)], keepsUpdatedAt: true)) != nil
+            pendingReadIds.remove(sessionId)
+            guard current == generation else { return }
+            if succeeded {
+                if pendingUnreadStates[sessionId] == nil,
+                   readSyncIntents[sessionId]?.revision == intentAtStart.revision
+                {
+                    readSyncIntents[sessionId] = nil
+                    if sessionRunSequences[sessionId, default: 0] == intentAtStart.runSequenceAtRead {
+                        recordViewedWatermark(sessionId, updatedAt: intentAtStart.maxUpdatedAt)
+                    }
+                }
+                if pendingUnreadStates[sessionId] != nil, viewedSessionIds[sessionId] == nil {
+                    syncPendingUnread(sessionId)
+                } else if readSyncIntents[sessionId] != nil {
+                    flushReadSync(sessionId)
+                }
+            }
+        }
+    }
+
+    private func recheckFlushedAmbiguousRead(sessionId: String, generation current: Int) async {
+        guard current == generation,
+              state == .connected,
+              let watch = flushedAmbiguousReads[sessionId],
+              viewedSessionIds[sessionId] == nil,
+              sessionViewEpochs[sessionId, default: 0] == watch.viewEpoch,
+              activeRuns[sessionId] == nil
+        else {
+            return
+        }
+        let detail = try? await call("session:get", [.string(sessionId)])
+        guard current == generation,
+              state == .connected,
+              flushedAmbiguousReads[sessionId] == watch,
+              viewedSessionIds[sessionId] == nil,
+              sessionViewEpochs[sessionId, default: 0] == watch.viewEpoch,
+              activeRuns[sessionId] == nil,
+              let entries = detail?["entries"]?.decodeList(ConversationEntry.self)
+        else {
+            return
+        }
+        let outcome = Self.classifyTerminalOutcome(of: entries, after: watch.maxUpdatedAt)
+        let hasNewerTurnActivity = entries.contains { entry in
+            guard entry.kind != .unknown, entry.kind != .compaction else { return false }
+            return max(entry.completedAt ?? 0, entry.createdAt) > watch.maxUpdatedAt
+        }
+        guard outcome == .completed || outcome == .error || (hasNewerTurnActivity && outcome != .settledIncomplete) else {
+            return
+        }
+        flushedAmbiguousReads[sessionId] = nil
+        let restored: UnreadState = outcome == .error
+            ? .error
+            : (outcome == .completed ? .unread : watch.fallbackUnread)
+        let latestEntryTimestamp = entries.map { max($0.completedAt ?? 0, $0.createdAt) }.max() ?? 0
+        let repairedUpdatedAt = max(session(id: sessionId)?.updatedAt ?? 0, latestEntryTimestamp)
+        markUnreadIfUnviewed(sessionId, state: restored, preservedUpdatedAt: repairedUpdatedAt)
     }
 
     // No local write: the desktop broadcasts `session:meta-updated` to every client before replying.
