@@ -91,36 +91,91 @@ final class SystemUserNotificationManager: UserNotificationManaging {
     }
 }
 
-private final class NotificationDelegateBridge: NSObject, UNUserNotificationCenterDelegate, @unchecked Sendable {
+// Use explicit completion-handler delegate methods instead of Swift `async` witnesses so
+// UIKit's completion handlers are never invoked on the cooperative background thread pool.
+final class NotificationDelegateBridge: NSObject, UNUserNotificationCenterDelegate, @unchecked Sendable {
     @MainActor var onOpenSession: (@MainActor (_ connectionId: UUID, _ sessionId: String) -> Void)?
     @MainActor var isForegroundSuppressed: (@MainActor () -> Bool)?
 
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
-        willPresent notification: UNNotification
-    ) async -> UNNotificationPresentationOptions {
-        let suppressed = await MainActor.run {
-            self.isForegroundSuppressed?() ?? true
-        }
-        return suppressed ? [] : [.banner, .list, .sound, .badge]
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        handleWillPresent(completionHandler: completionHandler)
     }
 
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
-        didReceive response: UNNotificationResponse
-    ) async {
-        guard response.actionIdentifier == UNNotificationDefaultActionIdentifier else { return }
-        let userInfo = response.notification.request.content.userInfo
-        guard let rawConnectionId = userInfo["connectionId"] as? String,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        handleDidReceive(
+            actionIdentifier: response.actionIdentifier,
+            userInfo: response.notification.request.content.userInfo,
+            completionHandler: completionHandler
+        )
+    }
+
+    func handleWillPresent(
+        completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        let sendableCompletion = UnsafeSendableBox(completionHandler)
+        runOnMainActor { [weak self] in
+            let suppressed = self?.isForegroundSuppressed?() ?? true
+            sendableCompletion.value(suppressed ? [] : [.banner, .list, .sound, .badge])
+        }
+    }
+
+    func handleDidReceive(
+        actionIdentifier: String,
+        userInfo: [AnyHashable: Any],
+        completionHandler: @escaping () -> Void
+    ) {
+        let target = Self.parseOpenSessionTarget(actionIdentifier: actionIdentifier, userInfo: userInfo)
+        let sendableCompletion = UnsafeSendableBox(completionHandler)
+        runOnMainActor { [weak self] in
+            defer { sendableCompletion.value() }
+            if let target {
+                self?.onOpenSession?(target.connectionId, target.sessionId)
+            }
+        }
+    }
+
+    private static func parseOpenSessionTarget(
+        actionIdentifier: String,
+        userInfo: [AnyHashable: Any]
+    ) -> (connectionId: UUID, sessionId: String)? {
+        guard actionIdentifier == UNNotificationDefaultActionIdentifier,
+              let rawConnectionId = userInfo["connectionId"] as? String,
               let connectionId = UUID(uuidString: rawConnectionId),
               let sessionId = userInfo["sessionId"] as? String,
               !sessionId.isEmpty
         else {
-            return
+            return nil
         }
-        await MainActor.run {
-            self.onOpenSession?(connectionId, sessionId)
+        return (connectionId, sessionId)
+    }
+
+    private func runOnMainActor(_ work: @escaping @MainActor () -> Void) {
+        if Thread.isMainThread {
+            MainActor.assumeIsolated {
+                work()
+            }
+        } else {
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    work()
+                }
+            }
         }
+    }
+}
+
+private struct UnsafeSendableBox<Value>: @unchecked Sendable {
+    let value: Value
+    init(_ value: Value) {
+        self.value = value
     }
 }
 

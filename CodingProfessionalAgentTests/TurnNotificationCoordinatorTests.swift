@@ -1,4 +1,5 @@
 import Foundation
+import UserNotifications
 import XCTest
 @testable import CodingProfessionalAgent
 
@@ -398,6 +399,112 @@ final class TurnNotificationCoordinatorTests: XCTestCase {
         try? await client.resumeSession(id: "s-imm")
         coordinator.setAppActive(false)
         XCTAssertGreaterThanOrEqual(bg.startCount, 1, "Expected continued task to start synchronously during foreground send")
+    }
+
+    func testNotificationDelegateBridgeDeliversCompletionHandlersOnMainThread() async throws {
+        @MainActor
+        final class CallbackResult {
+            var didReceiveCompleted = false
+            var didReceiveCompletionOnMainThread = false
+            var dismissedCompleted = false
+            var dismissedCompletionOnMainThread = false
+            var optionsWhenSuppressed: UNNotificationPresentationOptions?
+            var willPresentSuppressedOnMainThread = false
+            var optionsWhenVisible: UNNotificationPresentationOptions?
+            var willPresentVisibleOnMainThread = false
+        }
+
+        let bridge = NotificationDelegateBridge()
+        XCTAssertTrue(bridge.responds(to: #selector(
+            UNUserNotificationCenterDelegate.userNotificationCenter(_:willPresent:withCompletionHandler:)
+        )))
+        XCTAssertTrue(bridge.responds(to: #selector(
+            UNUserNotificationCenterDelegate.userNotificationCenter(_:didReceive:withCompletionHandler:)
+        )))
+
+        let result = CallbackResult()
+        let expectedConnectionId = UUID()
+        var opened: [(UUID, String)] = []
+        var openIsMainThread = false
+        bridge.onOpenSession = { connId, sessId in
+            openIsMainThread = Thread.isMainThread
+            opened.append((connId, sessId))
+        }
+
+        // 1. Background-queue didReceive callback (simulating SpringBoard/UNUserNotificationCenter background delivery)
+        // must invoke both onOpenSession and completionHandler on the main thread.
+        DispatchQueue.global(qos: .userInitiated).async {
+            bridge.handleDidReceive(
+                actionIdentifier: UNNotificationDefaultActionIdentifier,
+                userInfo: [
+                    "connectionId": expectedConnectionId.uuidString,
+                    "sessionId": "sess-bg-tap",
+                ]
+            ) {
+                let onMain = Thread.isMainThread
+                MainActor.assumeIsolated {
+                    result.didReceiveCompletionOnMainThread = onMain
+                    result.didReceiveCompleted = true
+                }
+            }
+        }
+        try await waitUntil("background didReceive completion") { result.didReceiveCompleted }
+        XCTAssertTrue(result.didReceiveCompletionOnMainThread)
+        XCTAssertTrue(openIsMainThread)
+        XCTAssertEqual(opened.count, 1)
+        XCTAssertEqual(opened.first?.0, expectedConnectionId)
+        XCTAssertEqual(opened.first?.1, "sess-bg-tap")
+
+        // 2. Non-default action or malformed payload must still invoke completionHandler on main thread without opening.
+        DispatchQueue.global(qos: .userInitiated).async {
+            bridge.handleDidReceive(
+                actionIdentifier: UNNotificationDismissActionIdentifier,
+                userInfo: [
+                    "connectionId": expectedConnectionId.uuidString,
+                    "sessionId": "sess-ignored",
+                ]
+            ) {
+                let onMain = Thread.isMainThread
+                MainActor.assumeIsolated {
+                    result.dismissedCompletionOnMainThread = onMain
+                    result.dismissedCompleted = true
+                }
+            }
+        }
+        try await waitUntil("dismiss didReceive completion") { result.dismissedCompleted }
+        XCTAssertTrue(result.dismissedCompletionOnMainThread)
+        XCTAssertEqual(opened.count, 1)
+
+        // 3. Background-queue willPresent callback must invoke completionHandler on the main thread.
+        var suppressed = true
+        bridge.isForegroundSuppressed = { suppressed }
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            bridge.handleWillPresent { options in
+                let onMain = Thread.isMainThread
+                MainActor.assumeIsolated {
+                    result.willPresentSuppressedOnMainThread = onMain
+                    result.optionsWhenSuppressed = options
+                }
+            }
+        }
+        try await waitUntil("willPresent suppressed completion") { result.optionsWhenSuppressed != nil }
+        XCTAssertTrue(result.willPresentSuppressedOnMainThread)
+        XCTAssertEqual(result.optionsWhenSuppressed, [])
+
+        suppressed = false
+        DispatchQueue.global(qos: .userInitiated).async {
+            bridge.handleWillPresent { options in
+                let onMain = Thread.isMainThread
+                MainActor.assumeIsolated {
+                    result.willPresentVisibleOnMainThread = onMain
+                    result.optionsWhenVisible = options
+                }
+            }
+        }
+        try await waitUntil("willPresent visible completion") { result.optionsWhenVisible != nil }
+        XCTAssertTrue(result.willPresentVisibleOnMainThread)
+        XCTAssertEqual(result.optionsWhenVisible, [.banner, .list, .sound, .badge])
     }
 
     private func waitUntil(_ label: String, timeout: Double = 3.0, condition: () -> Bool) async throws {
