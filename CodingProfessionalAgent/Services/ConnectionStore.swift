@@ -12,6 +12,7 @@ final class ConnectionStore {
     private(set) var connections: [DesktopConnection] = []
     @ObservationIgnored private var clients: [UUID: DesktopClient] = [:]
     @ObservationIgnored private var changeObservers: [UUID: @MainActor () -> Void] = [:]
+    @ObservationIgnored private var willRemoveObservers: [UUID: @MainActor (UUID) -> Task<Void, Never>?] = [:]
 
     init(defaults: UserDefaults = .standard, persistsCredentials: Bool = true) {
         self.defaults = defaults
@@ -79,14 +80,20 @@ final class ConnectionStore {
     }
 
     func remove(_ id: UUID) {
-        clients[id]?.stop()
-        clients[id] = nil
+        let cleanupTasks = Array(willRemoveObservers.values).compactMap { $0(id) }
+        let removedClient = clients.removeValue(forKey: id)
         connections.removeAll { $0.id == id }
         if persistsCredentials {
             KeychainStore.deletePassword(for: id)
             KeychainStore.deleteTunnelAPIKey(for: id)
         }
         save()
+        guard let removedClient else { return }
+        if cleanupTasks.isEmpty {
+            removedClient.stop()
+        } else {
+            RemovalStopCoordinator(cleanupTasks: cleanupTasks, client: removedClient).start()
+        }
     }
 
     func move(fromOffsets source: IndexSet, toOffset destination: Int) {
@@ -129,6 +136,16 @@ final class ConnectionStore {
         changeObservers[token] = nil
     }
 
+    func addWillRemoveObserver(_ handler: @escaping @MainActor (UUID) -> Task<Void, Never>?) -> UUID {
+        let token = UUID()
+        willRemoveObservers[token] = handler
+        return token
+    }
+
+    func removeWillRemoveObserver(_ token: UUID) {
+        willRemoveObservers[token] = nil
+    }
+
     private func notifyObservers() {
         for observer in Array(changeObservers.values) {
             observer()
@@ -140,5 +157,47 @@ final class ConnectionStore {
             defaults.set(data, forKey: Self.storageKey)
         }
         notifyObservers()
+    }
+}
+
+// Bounds the wait for pre-removal unregister RPCs so an unresponsive desktop cannot delay socket closure.
+@MainActor
+private final class RemovalStopCoordinator {
+    private var didStop = false
+    private var cleanupTask: Task<Void, Never>?
+    private var deadlineTask: Task<Void, Never>?
+    private let cleanupTasks: [Task<Void, Never>]
+    private let client: DesktopClient
+
+    init(cleanupTasks: [Task<Void, Never>], client: DesktopClient) {
+        self.cleanupTasks = cleanupTasks
+        self.client = client
+    }
+
+    func start(timeout: Duration = .milliseconds(500)) {
+        cleanupTask = Task { @MainActor in
+            for task in cleanupTasks {
+                await task.value
+                if didStop { return }
+            }
+            finish()
+        }
+        deadlineTask = Task { @MainActor in
+            try? await Task.sleep(for: timeout)
+            finish()
+        }
+    }
+
+    private func finish() {
+        guard !didStop else { return }
+        didStop = true
+        deadlineTask?.cancel()
+        deadlineTask = nil
+        cleanupTask?.cancel()
+        cleanupTask = nil
+        for task in cleanupTasks {
+            task.cancel()
+        }
+        client.stop()
     }
 }

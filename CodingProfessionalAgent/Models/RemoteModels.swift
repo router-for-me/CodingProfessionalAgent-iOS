@@ -717,3 +717,129 @@ struct DelegateRunRequest: Sendable {
         return .object(object)
     }
 }
+
+// Target APNs environment sent to the desktop when registering an iOS push token.
+enum APNsEnvironment: String, Codable, Hashable, Sendable {
+    case production
+    case sandbox
+}
+
+// Detects the active APNs environment from the app's embedded provisioning profile.
+enum APNsEnvironmentDetector {
+    static var fallbackEnvironment: APNsEnvironment {
+        #if DEBUG
+        return .sandbox
+        #else
+        return .production
+        #endif
+    }
+
+    static func detect(bundle: Bundle = .main) -> APNsEnvironment {
+        guard let url = bundle.url(forResource: "embedded", withExtension: "mobileprovision"),
+              let data = try? Data(contentsOf: url)
+        else {
+            return fallbackEnvironment
+        }
+        return detect(mobileProvisionData: data)
+    }
+
+    static func detect(mobileProvisionData data: Data?) -> APNsEnvironment {
+        guard let data, !data.isEmpty,
+              let plistData = extractPlistData(from: data),
+              let plist = try? PropertyListSerialization.propertyList(from: plistData, options: [], format: nil) as? [String: Any]
+        else {
+            return fallbackEnvironment
+        }
+        let entitlements = plist["Entitlements"] as? [String: Any]
+        let apsEnvironment = (entitlements?["aps-environment"] as? String)
+            ?? (plist["aps-environment"] as? String)
+        guard let apsEnvironment else {
+            return fallbackEnvironment
+        }
+        switch apsEnvironment.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "development":
+            return .sandbox
+        case "production":
+            return .production
+        default:
+            return fallbackEnvironment
+        }
+    }
+
+    private static func extractPlistData(from data: Data) -> Data? {
+        let startMarker = Data("<plist".utf8)
+        let endMarker = Data("</plist>".utf8)
+        if let startRange = data.range(of: startMarker),
+           let endRange = data.range(of: endMarker, options: [], in: startRange.lowerBound..<data.endIndex)
+        {
+            return data.subdata(in: startRange.lowerBound..<endRange.upperBound)
+        }
+        return data
+    }
+}
+
+// Payload for `notification:registerClient`, matching the desktop shared contract.
+struct NotificationClientRegistration: Codable, Hashable, Sendable {
+    let clientId: String
+    let connectionId: String
+    let deviceToken: String
+    let environment: APNsEnvironment
+    let platform: String
+    let deviceName: String?
+    let appVersion: String?
+    let enabled: Bool
+
+    init(
+        clientId: String,
+        connectionId: String,
+        deviceToken: String,
+        environment: APNsEnvironment,
+        platform: String = "ios",
+        deviceName: String? = nil,
+        appVersion: String? = nil,
+        enabled: Bool = true
+    ) {
+        self.clientId = clientId
+        self.connectionId = connectionId
+        self.deviceToken = deviceToken
+        self.environment = environment
+        self.platform = platform
+        self.deviceName = deviceName
+        self.appVersion = appVersion
+        self.enabled = enabled
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case clientId, connectionId, deviceToken, environment, platform, deviceName, appVersion, enabled
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        clientId = try container.decode(String.self, forKey: .clientId)
+        connectionId = try container.decode(String.self, forKey: .connectionId)
+        deviceToken = try container.decode(String.self, forKey: .deviceToken)
+        environment = try container.decode(APNsEnvironment.self, forKey: .environment)
+        platform = (try? container.decodeIfPresent(String.self, forKey: .platform)) ?? "ios"
+        deviceName = try? container.decodeIfPresent(String.self, forKey: .deviceName)
+        appVersion = try? container.decodeIfPresent(String.self, forKey: .appVersion)
+        enabled = (try? container.decodeIfPresent(Bool.self, forKey: .enabled)) ?? true
+    }
+
+    var json: JSONValue {
+        var object: [String: JSONValue] = [
+            "clientId": .string(clientId),
+            "connectionId": .string(connectionId),
+            "deviceToken": .string(deviceToken),
+            "environment": .string(environment.rawValue),
+            "platform": .string(platform),
+            "enabled": .bool(enabled),
+        ]
+        if let deviceName, !deviceName.isEmpty {
+            object["deviceName"] = .string(deviceName)
+        }
+        if let appVersion, !appVersion.isEmpty {
+            object["appVersion"] = .string(appVersion)
+        }
+        return .object(object)
+    }
+}

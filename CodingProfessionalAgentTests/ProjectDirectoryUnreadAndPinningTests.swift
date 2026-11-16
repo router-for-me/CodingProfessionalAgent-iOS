@@ -699,17 +699,9 @@ final class ProjectDirectoryUnreadAndPinningTests: XCTestCase {
         ))
         defer { client.stop() }
 
-        var completedIds: [String] = []
-        _ = client.addListener { event in
-            if event.kind == DesktopEvent.turnCompleted,
-               let sid = event.payload["sessionId"]?.stringValue {
-                completedIds.append(sid)
-            }
-        }
-
         client.start()
         try await waitUntil("initial sync done") {
-            client.hasSynced && client.activeTopLevelSessions.count == 3
+            client.hasSynced && client.activeRuns.count == 3
         }
 
         server.activeRuns = []
@@ -735,9 +727,11 @@ final class ProjectDirectoryUnreadAndPinningTests: XCTestCase {
         server.dropActiveWebSockets()
 
         try await waitUntil("reconnected and reconciled offline outcomes") {
-            client.state == .connected && client.activeTopLevelSessions.isEmpty && completedIds.count == 1
+            client.state == .connected
+                && client.activeRuns.isEmpty
+                && client.session(id: "s-ok")?.unread == .unread
+                && client.session(id: "s-err")?.unread == .error
         }
-        XCTAssertEqual(completedIds, ["s-ok"])
         XCTAssertEqual(client.session(id: "s-ok")?.unread, .unread)
         XCTAssertEqual(client.session(id: "s-err")?.unread, .error)
         XCTAssertEqual(client.session(id: "s-aborted")?.unread, .read)
@@ -854,17 +848,9 @@ final class ProjectDirectoryUnreadAndPinningTests: XCTestCase {
         ))
         defer { client.stop() }
 
-        var completedIds: Set<String> = []
-        _ = client.addListener { event in
-            if event.kind == DesktopEvent.turnCompleted,
-               let sid = event.payload["sessionId"]?.stringValue {
-                completedIds.insert(sid)
-            }
-        }
-
         client.start()
         try await waitUntil("initial sync done") {
-            client.hasSynced && client.activeTopLevelSessions.count == 4
+            client.hasSynced && client.activeRuns.count == 4
         }
 
         server.activeRuns = []
@@ -897,7 +883,10 @@ final class ProjectDirectoryUnreadAndPinningTests: XCTestCase {
         server.dropActiveWebSockets()
 
         try await waitUntil("reconciled both s-real-1 and s-real-2 after mid-reconcile drop") {
-            client.state == .connected && completedIds == ["s-real-1", "s-real-2"]
+            client.state == .connected
+                && client.activeRuns.isEmpty
+                && client.session(id: "s-real-1")?.unread == .unread
+                && client.session(id: "s-real-2")?.unread == .unread
         }
         XCTAssertEqual(client.session(id: "s-real-1")?.unread, .unread)
         XCTAssertEqual(client.session(id: "s-real-2")?.unread, .unread)
@@ -1045,17 +1034,9 @@ final class ProjectDirectoryUnreadAndPinningTests: XCTestCase {
         ))
         defer { client.stop() }
 
-        var completedRunIds: [String] = []
-        _ = client.addListener { event in
-            if event.kind == DesktopEvent.turnCompleted,
-               let rid = event.payload["runId"]?.stringValue {
-                completedRunIds.append(rid)
-            }
-        }
-
         client.start()
         try await waitUntil("initial sync done") {
-            client.hasSynced && client.activeTopLevelSessions.count == 2
+            client.hasSynced && client.activeRuns.count == 2
         }
 
         server.activeRuns = []
@@ -1108,7 +1089,6 @@ final class ProjectDirectoryUnreadAndPinningTests: XCTestCase {
         try sendEvent(client, kind: "session:run-status", data: [
             "sessionId": "s-rerun-mid", "runId": "r-new-2", "status": "idle", "updatedAt": 110,
         ])
-        XCTAssertTrue(completedRunIds.contains("r-new-2"))
         XCTAssertEqual(client.session(id: "s-rerun-mid")?.unread, .unread)
     }
 
@@ -1134,14 +1114,6 @@ final class ProjectDirectoryUnreadAndPinningTests: XCTestCase {
         ))
         defer { client.stop() }
 
-        var completedRunIds: [String] = []
-        _ = client.addListener { event in
-            if event.kind == DesktopEvent.turnCompleted,
-               let rid = event.payload["runId"]?.stringValue {
-                completedRunIds.append(rid)
-            }
-        }
-
         client.start()
         try await waitUntil("initial sync done") {
             client.hasSynced && client.sessions.count == 1
@@ -1163,7 +1135,6 @@ final class ProjectDirectoryUnreadAndPinningTests: XCTestCase {
         try await waitUntil("s-amb-drop recovered unread after reconnect") {
             client.state == .connected && client.session(id: "s-amb-drop")?.unread == .unread
         }
-        XCTAssertEqual(completedRunIds, ["r-amb-1"])
     }
 
     func testStreamErrorAndPreIdleMetaUpdateRecoverAcrossDisconnect() async throws {
@@ -1187,17 +1158,9 @@ final class ProjectDirectoryUnreadAndPinningTests: XCTestCase {
         ))
         defer { client.stop() }
 
-        var completedIds: [String] = []
-        _ = client.addListener { event in
-            if event.kind == DesktopEvent.turnCompleted,
-               let sid = event.payload["sessionId"]?.stringValue {
-                completedIds.append(sid)
-            }
-        }
-
         client.start()
         try await waitUntil("initial sync done") {
-            client.hasSynced && client.activeTopLevelSessions.count == 2
+            client.hasSynced && client.activeRuns.count == 2
         }
 
         // 1. `s-err-drop` emits an error stream event before `idle`, then disconnects while server `unread` stays `false` and `updatedAt` stays `20`.
@@ -1230,7 +1193,6 @@ final class ProjectDirectoryUnreadAndPinningTests: XCTestCase {
                 && client.session(id: "s-err-drop")?.unread == .error
                 && client.session(id: "s-meta-drop")?.unread == .unread
         }
-        XCTAssertEqual(completedIds, ["s-meta-drop"])
     }
 
     func testInitialSyncActiveRunWithHistoricalReplyAndSupersededAmbiguousIdleDoNotMisfire() async throws {
@@ -1264,14 +1226,6 @@ final class ProjectDirectoryUnreadAndPinningTests: XCTestCase {
         ))
         defer { client.stop() }
 
-        var completedRunIds: [String] = []
-        _ = client.addListener { event in
-            if event.kind == DesktopEvent.turnCompleted,
-               let rid = event.payload["runId"]?.stringValue {
-                completedRunIds.append(rid)
-            }
-        }
-
         client.start()
         try await waitUntil("initial sync done") {
             client.hasSynced && client.isRunning("s-hist")
@@ -1283,7 +1237,6 @@ final class ProjectDirectoryUnreadAndPinningTests: XCTestCase {
         ])
         try await Task.sleep(for: .milliseconds(80))
         XCTAssertEqual(client.session(id: "s-hist")?.unread, .read)
-        XCTAssertTrue(completedRunIds.isEmpty)
 
         // Part B: `r-old` triggers an ambiguous `idle` whose `session:get` is held; meanwhile `r-new` starts AND finishes.
         server.holdSessionGetReplies = true
@@ -1311,12 +1264,16 @@ final class ProjectDirectoryUnreadAndPinningTests: XCTestCase {
         try sendEvent(client, kind: "session:run-status", data: [
             "sessionId": "s-supersede", "runId": "r-new", "status": "idle", "updatedAt": 26,
         ])
-        XCTAssertEqual(completedRunIds, ["r-new"])
+        XCTAssertEqual(client.session(id: "s-supersede")?.unread, .unread)
+        try await waitUntil("r-new unread persisted via setMeta") {
+            server.setMetaCalls.count == 1
+        }
 
         server.releaseHeldSessionGetReplies()
         try await Task.sleep(for: .milliseconds(80))
-        // `r-old`'s delayed `session:get` must NOT emit a second notification misattributed to `r-old`.
-        XCTAssertEqual(completedRunIds, ["r-new"])
+        // `r-old`'s delayed `session:get` must NOT clobber `s-supersede` or emit duplicate unread writes.
+        XCTAssertEqual(client.session(id: "s-supersede")?.unread, .unread)
+        XCTAssertEqual(server.setMetaCalls.count, 1)
     }
 
     func testViewingRunningSessionAtDisconnectThenLeavingOfflineStillMarksUnreadOnReconnect() async throws {
@@ -1520,14 +1477,6 @@ final class ProjectDirectoryUnreadAndPinningTests: XCTestCase {
         ))
         defer { client.stop() }
 
-        var completedRunIds: [String] = []
-        _ = client.addListener { event in
-            if event.kind == DesktopEvent.turnCompleted,
-               let rid = event.payload["runId"]?.stringValue {
-                completedRunIds.append(rid)
-            }
-        }
-
         client.start()
         try await waitUntil("initial sync done") {
             client.hasSynced && client.sessions.count == 1
@@ -1553,7 +1502,6 @@ final class ProjectDirectoryUnreadAndPinningTests: XCTestCase {
         try await waitUntil("s-dup-idle marked unread after delayed session:get") {
             client.session(id: "s-dup-idle")?.unread == .unread
         }
-        XCTAssertEqual(completedRunIds, ["r-di"])
     }
 
     func testTransientSessionGetFailureDuringAmbiguousIdleRecoversOnManualResyncWithoutDisconnect() async throws {
@@ -1627,14 +1575,6 @@ final class ProjectDirectoryUnreadAndPinningTests: XCTestCase {
         ))
         defer { client.stop() }
 
-        var completedRunIds: [String] = []
-        _ = client.addListener { event in
-            if event.kind == DesktopEvent.turnCompleted,
-               let rid = event.payload["runId"]?.stringValue {
-                completedRunIds.append(rid)
-            }
-        }
-
         client.start()
         try await waitUntil("initial sync done") {
             client.hasSynced && client.sessions.count == 1
@@ -1664,7 +1604,6 @@ final class ProjectDirectoryUnreadAndPinningTests: XCTestCase {
         try await waitUntil("s-delayed-save marked unread once entries persisted") {
             client.session(id: "s-delayed-save")?.unread == .unread
         }
-        XCTAssertEqual(completedRunIds, ["r-ds"])
     }
 
     func testLateEntryPersistenceBeyondRetryWindowStillRecoversViaEntriesUpdated() async throws {
@@ -1688,14 +1627,6 @@ final class ProjectDirectoryUnreadAndPinningTests: XCTestCase {
             icon: .laptop
         ))
         defer { client.stop() }
-
-        var completedRunIds: [String] = []
-        _ = client.addListener { event in
-            if event.kind == DesktopEvent.turnCompleted,
-               let rid = event.payload["runId"]?.stringValue {
-                completedRunIds.append(rid)
-            }
-        }
 
         client.start()
         try await waitUntil("initial sync done") {
@@ -1726,7 +1657,6 @@ final class ProjectDirectoryUnreadAndPinningTests: XCTestCase {
         try await waitUntil("s-slow-save marked unread after late session:entries-updated") {
             client.session(id: "s-slow-save")?.unread == .unread
         }
-        XCTAssertEqual(completedRunIds, ["r-slow"])
     }
 
     func testStaleOfflineReadIntentDoesNotClearNewerOfflineCompletedTurnUnread() async throws {
@@ -2263,14 +2193,6 @@ final class ProjectDirectoryUnreadAndPinningTests: XCTestCase {
         ))
         defer { client.stop() }
 
-        var completedRunIds: [String] = []
-        _ = client.addListener { event in
-            if event.kind == DesktopEvent.turnCompleted,
-               let rid = event.payload["runId"]?.stringValue {
-                completedRunIds.append(rid)
-            }
-        }
-
         client.start()
         try await waitUntil("initial sync done") {
             client.hasSynced && client.sessions.count == 2
@@ -2307,7 +2229,7 @@ final class ProjectDirectoryUnreadAndPinningTests: XCTestCase {
 
         // Part B: Turn 1 on `s-stale-err-echo` errors and holds `setMeta(unread: "error")`;
         // user opens `s-stale-err-echo`, starts Turn 2 (`r-2`), leaves, old `setMeta(unread: "error")` echoes,
-        // and Turn 2 finishes cleanly -> must become `.unread` (blue dot) and emit `turnCompleted` for `r-2`!
+        // and Turn 2 finishes cleanly -> must become `.unread` (blue dot)!
         server.holdSetMetaReplies = true
         try sendEvent(client, kind: "session:run-status", data: [
             "sessionId": "s-stale-err-echo", "runId": "r-1-err", "status": "running", "updatedAt": 30,
@@ -2345,7 +2267,6 @@ final class ProjectDirectoryUnreadAndPinningTests: XCTestCase {
         ])
 
         XCTAssertEqual(client.session(id: "s-stale-err-echo")?.unread, .unread)
-        XCTAssertTrue(completedRunIds.contains("r-2-ok"))
 
         // Part C: User opens `s-stale-err-echo` AFTER Turn 2 finished (`flushReadSync` succeeds), leaves `ThreadView`,
         // and a slower second client broadcasts `unread: true` for that same Turn 2 (`entries` still ends at `t = 50`):
@@ -2396,7 +2317,6 @@ final class ProjectDirectoryUnreadAndPinningTests: XCTestCase {
         ])
         try await waitUntil("s-viewed-echo marked unread once assistant entry flushed after compaction") {
             client.session(id: "s-viewed-echo")?.unread == .unread
-                && completedRunIds.contains("r-ac-late")
         }
 
         // Part E1: Peer manual "Mark as Unread" (`keepsUpdatedAt: true` -> `updatedAt` unchanged at `55`) on `s-stale-err-echo`
@@ -2425,7 +2345,7 @@ final class ProjectDirectoryUnreadAndPinningTests: XCTestCase {
             "sessionId": "s-viewed-echo", "runId": "r-amb-viewed", "status": "idle", "updatedAt": 90,
         ])
         try await waitUntil("r-amb-viewed verified via session:get while viewed") {
-            completedRunIds.contains("r-amb-viewed")
+            client.session(id: "s-viewed-echo")?.updatedAt == 90
         }
         client.endViewing(sessionId: "s-viewed-echo")
 
@@ -2440,6 +2360,140 @@ final class ProjectDirectoryUnreadAndPinningTests: XCTestCase {
             server.sessions.first(where: { $0["id"]?.stringValue == "s-viewed-echo" })?["unread"]?.boolValue == false
         }
         XCTAssertEqual(client.session(id: "s-viewed-echo")?.unread, .read)
+    }
+
+    func testResyncAfterInvoluntaryDisconnectPreservesHistoricalAndReconciledUnreadStates() async throws {
+        let server = try MockUnreadDesktopServer()
+        defer { server.stop() }
+
+        // Initial snapshot has a historical unread session plus two active runs (s-ok and s-fail).
+        server.sessions = [
+            ["id": "s-history-unread", "title": "历史未读", "unread": true, "createdAt": 10, "updatedAt": 20],
+            ["id": "s-ok", "title": "后台长任务", "unread": false, "createdAt": 30, "updatedAt": 30],
+            ["id": "s-fail", "title": "后台报错任务", "unread": false, "createdAt": 40, "updatedAt": 40],
+        ]
+        server.activeRuns = [
+            ["sessionId": "s-ok", "runId": "run-ok-1", "status": "running", "updatedAt": 31],
+            ["sessionId": "s-fail", "runId": "run-fail-1", "status": "running", "updatedAt": 41],
+        ]
+
+        let client = DesktopClient(connection: DesktopConnection(
+            name: "Local",
+            host: "127.0.0.1",
+            port: Int(server.port),
+            icon: .laptop
+        ))
+        defer { client.stop() }
+
+        client.start()
+        try await waitUntil("initial sync done") {
+            client.hasSynced && client.activeRuns.count == 2
+        }
+        XCTAssertEqual(client.session(id: "s-history-unread")?.unread, .unread)
+        XCTAssertEqual(client.session(id: "s-ok")?.unread, .read)
+        XCTAssertEqual(client.session(id: "s-fail")?.unread, .read)
+
+        // While disconnected, s-ok finishes normally (unread: true) and s-fail errors (unread: "error").
+        server.activeRuns = []
+        server.sessions = [
+            ["id": "s-history-unread", "title": "历史未读", "unread": true, "createdAt": 10, "updatedAt": 20],
+            ["id": "s-ok", "title": "后台长任务", "unread": true, "createdAt": 30, "updatedAt": 90],
+            ["id": "s-fail", "title": "后台报错任务", "unread": "error", "createdAt": 40, "updatedAt": 91],
+        ]
+        server.dropActiveWebSockets()
+
+        try await waitUntil("reconnect resync reconciles s-ok and s-fail") {
+            client.state == .connected
+                && client.activeRuns.isEmpty
+                && client.session(id: "s-ok")?.unread == .unread
+                && client.session(id: "s-fail")?.unread == .error
+        }
+        XCTAssertEqual(client.session(id: "s-history-unread")?.unread, .unread)
+
+        // A subsequent manual resync preserves reconciled unread states without clobbering.
+        await client.resync()
+        XCTAssertEqual(client.session(id: "s-history-unread")?.unread, .unread)
+        XCTAssertEqual(client.session(id: "s-ok")?.unread, .unread)
+        XCTAssertEqual(client.session(id: "s-fail")?.unread, .error)
+    }
+
+    func testPartialResyncFailurePreservesInterruptedSnapshotUntilBothRunsAndSessionsSucceed() async throws {
+        let server = try MockUnreadDesktopServer()
+        defer { server.stop() }
+
+        server.sessions = [
+            ["id": "s-1", "title": "第一轮断连任务", "unread": false, "createdAt": 10, "updatedAt": 10],
+            ["id": "s-2", "title": "第二轮断连任务", "unread": false, "createdAt": 20, "updatedAt": 20],
+        ]
+        server.activeRuns = [
+            ["sessionId": "s-1", "runId": "run-1", "status": "running", "updatedAt": 11],
+        ]
+
+        let client = DesktopClient(connection: DesktopConnection(
+            name: "Local",
+            host: "127.0.0.1",
+            port: Int(server.port),
+            icon: .laptop
+        ))
+        defer { client.stop() }
+
+        client.start()
+        try await waitUntil("initial sync complete") {
+            client.hasSynced && client.activeRuns.keys.sorted() == ["s-1"]
+        }
+
+        // Case 1: s-1 finishes offline, reconnect's first session:listSessions fails -> must keep interrupted snapshot for retry.
+        server.activeRuns = []
+        server.sessions = [
+            ["id": "s-1", "title": "第一轮断连任务", "unread": false, "createdAt": 10, "updatedAt": 50],
+            ["id": "s-2", "title": "第二轮断连任务", "unread": false, "createdAt": 20, "updatedAt": 20],
+        ]
+        server.entriesBySession = [
+            "s-1": [
+                ["id": "u1", "kind": "user", "createdAt": 11, "content": [["type": "text", "text": "task1"]]],
+                ["id": "a1", "kind": "assistant", "status": "done", "stopReason": "stop", "createdAt": 50, "content": [["type": "text", "text": "done1"]]],
+            ],
+            "s-2": [
+                ["id": "u2", "kind": "user", "createdAt": 60, "content": [["type": "text", "text": "task2"]]],
+                ["id": "a2", "kind": "assistant", "status": "done", "stopReason": "stop", "createdAt": 70, "content": [["type": "text", "text": "done2"]]],
+            ],
+        ]
+        server.failListSessionsRemaining = 1
+        server.dropActiveWebSockets()
+
+        try await waitUntil("reconnected after partial resync") {
+            client.state == .connected && server.failListSessionsRemaining == 0
+        }
+        try await Task.sleep(for: .milliseconds(80))
+        XCTAssertEqual(client.session(id: "s-1")?.unread, .read)
+
+        await client.resync()
+        XCTAssertTrue(client.activeRuns.isEmpty)
+        XCTAssertEqual(client.session(id: "s-1")?.unread, .unread)
+
+        // Case 2: s-2 starts, then finishes offline while first session:getActiveRuns fails -> must keep interrupted snapshot for retry.
+        try sendEvent(client, kind: "session:run-status", data: [
+            "sessionId": "s-2", "runId": "run-2", "status": "running", "updatedAt": 60,
+        ])
+        server.activeRuns = []
+        server.sessions = [
+            ["id": "s-1", "title": "第一轮断连任务", "unread": true, "createdAt": 10, "updatedAt": 50],
+            ["id": "s-2", "title": "第二轮断连任务", "unread": false, "createdAt": 20, "updatedAt": 70],
+        ]
+        server.failGetActiveRunsRemaining = 1
+        server.dropActiveWebSockets()
+
+        try await waitUntil("reconnected after getActiveRuns failure") {
+            client.state == .connected && server.failGetActiveRunsRemaining == 0
+        }
+        try await Task.sleep(for: .milliseconds(80))
+        XCTAssertEqual(client.session(id: "s-1")?.unread, .unread)
+        XCTAssertEqual(client.session(id: "s-2")?.unread, .read)
+
+        await client.resync()
+        XCTAssertTrue(client.activeRuns.isEmpty)
+        XCTAssertEqual(client.session(id: "s-1")?.unread, .unread)
+        XCTAssertEqual(client.session(id: "s-2")?.unread, .unread)
     }
 
     private func waitUntil(_ label: String, timeout: Double = 5.0, condition: () -> Bool) async throws {
@@ -2510,6 +2564,14 @@ private final class MockUnreadDesktopServer: @unchecked Sendable {
         get { lock.withLock { _failSetMetaRemaining } }
         set { lock.withLock { _failSetMetaRemaining = newValue } }
     }
+    var failGetActiveRunsRemaining: Int {
+        get { lock.withLock { _failGetActiveRunsRemaining } }
+        set { lock.withLock { _failGetActiveRunsRemaining = newValue } }
+    }
+    var failListSessionsRemaining: Int {
+        get { lock.withLock { _failListSessionsRemaining } }
+        set { lock.withLock { _failListSessionsRemaining = newValue } }
+    }
 
     private var _sessions: [JSONValue] = []
     private var _activeRuns: [JSONValue] = []
@@ -2524,6 +2586,8 @@ private final class MockUnreadDesktopServer: @unchecked Sendable {
     private var _dropOnSessionGetRemaining = 0
     private var _failSessionGetRemaining = 0
     private var _failSetMetaRemaining = 0
+    private var _failGetActiveRunsRemaining = 0
+    private var _failListSessionsRemaining = 0
 
     init() throws {
         listener = try NWListener(using: .tcp, on: .any)
@@ -2739,8 +2803,36 @@ private final class MockUnreadDesktopServer: @unchecked Sendable {
                 let result: JSONValue
                 switch method {
                 case "session:getActiveRuns":
+                    let shouldFailRuns = lock.withLock { () -> Bool in
+                        if _failGetActiveRunsRemaining > 0 {
+                            _failGetActiveRunsRemaining -= 1
+                            return true
+                        }
+                        return false
+                    }
+                    if shouldFailRuns {
+                        let errReply: JSONValue = ["type": "rpc_error", "id": .string(id), "error": ["message": "simulated transient rpc failure"]]
+                        if let text = try? errReply.jsonString() {
+                            sendWSText(conn: conn, text: text)
+                        }
+                        continue
+                    }
                     result = .array(activeRuns)
                 case "session:listSessions":
+                    let shouldFailList = lock.withLock { () -> Bool in
+                        if _failListSessionsRemaining > 0 {
+                            _failListSessionsRemaining -= 1
+                            return true
+                        }
+                        return false
+                    }
+                    if shouldFailList {
+                        let errReply: JSONValue = ["type": "rpc_error", "id": .string(id), "error": ["message": "simulated transient rpc failure"]]
+                        if let text = try? errReply.jsonString() {
+                            sendWSText(conn: conn, text: text)
+                        }
+                        continue
+                    }
                     let sendListReply = { [weak self] in
                         guard let self else { return }
                         let reply: JSONValue = ["type": "rpc_result", "id": .string(id), "result": .array(self.sessions)]

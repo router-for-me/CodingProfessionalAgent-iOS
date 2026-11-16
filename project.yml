@@ -24,10 +24,6 @@ targets:
                 # The desktop Web server is plain HTTP on user-provided hosts.
                 NSAppTransportSecurity:
                     NSAllowsArbitraryLoads: true
-                UIBackgroundModes:
-                    - processing
-                BGTaskSchedulerPermittedIdentifiers:
-                    - me.router-for.CodingProfessionalAgent.turn.*
         settings:
             base:
                 PRODUCT_BUNDLE_IDENTIFIER: me.router-for.CodingProfessionalAgent
@@ -40,6 +36,7 @@ targets:
                 INFOPLIST_KEY_NSLocalNetworkUsageDescription: 用于连接局域网中的 CPA 桌面版。
                 INFOPLIST_KEY_NSCameraUsageDescription: 用于拍摄照片并作为附件发送给 CPA。
                 ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+                CODE_SIGN_ENTITLEMENTS: CodingProfessionalAgent/Resources/CodingProfessionalAgent.entitlements
                 CODE_SIGN_STYLE: Automatic
                 DEVELOPMENT_TEAM: QGB5U2U29X
     CodingProfessionalAgentTests:

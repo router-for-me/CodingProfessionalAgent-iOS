@@ -12,10 +12,6 @@ enum ConnectionState: Equatable {
 struct DesktopEvent: Sendable {
     // Synthetic event emitted after every (re)connect resynchronization.
     static let synced = "client:synced"
-    // Synthetic event emitted when a top-level conversation turn finishes normally.
-    static let turnCompleted = "client:turn-completed"
-    // Synthetic event emitted when optimistic local run placeholders are added or cleared.
-    static let localRunsChanged = "client:local-runs-changed"
 
     let kind: String
     let payload: JSONValue
@@ -165,14 +161,11 @@ final class DesktopClient: Identifiable {
         let timestamp: Double
     }
 
-    private static let maxNotifiedRunKeys = 128
     private static let maxPendingVerifications = 64
     private static let abortSuppressionWindowMs: Double = 30_000
     @ObservationIgnored private var runOutcomes: [String: TrackedRunOutcome] = [:]
     @ObservationIgnored private var pendingRunVerifications: [String: PendingRunVerification] = [:]
     @ObservationIgnored private var recentlyAbortedRuns: [String: AbortedRunRecord] = [:]
-    @ObservationIgnored private var notifiedRunKeyOrder: [String] = []
-    @ObservationIgnored private var notifiedRunKeys: Set<String> = []
 
     init(connection: DesktopConnection, tunnelManager: TunnelClientManager = .shared) {
         self.id = connection.id
@@ -699,8 +692,6 @@ final class DesktopClient: Identifiable {
             payload = parsed
         }
 
-        var completedTurnPayload: JSONValue?
-
         switch kind {
         case "projects:updated":
             if payload.arrayValue != nil {
@@ -738,7 +729,7 @@ final class DesktopClient: Identifiable {
             }
         case "session:run-status":
             if let run = try? payload.decode(ActiveRun.self) {
-                completedTurnPayload = applyRunStatus(run)
+                applyRunStatus(run)
             }
         case "session:stream-event":
             recordStreamOutcome(payload)
@@ -779,9 +770,6 @@ final class DesktopClient: Identifiable {
             break
         }
 
-        if let completedTurnPayload {
-            emit(DesktopEvent(kind: DesktopEvent.turnCompleted, payload: completedTurnPayload))
-        }
         emit(DesktopEvent(kind: kind, payload: payload))
     }
 
@@ -908,13 +896,13 @@ final class DesktopClient: Identifiable {
         sessions[index] = merged
     }
 
-    private func applyRunStatus(_ run: ActiveRun) -> JSONValue? {
+    private func applyRunStatus(_ run: ActiveRun) {
         guard run.status == "idle" else {
             bumpRunSequence(run.sessionId)
             pendingRunVerifications[run.sessionId] = nil
             activeRuns[run.sessionId] = run
             trackActiveRunStatus(run)
-            return nil
+            return
         }
         // Ignore a stale idle from a run that has already been replaced.
         if let current = activeRuns[run.sessionId],
@@ -922,12 +910,12 @@ final class DesktopClient: Identifiable {
            current.runId != run.runId,
            !current.runId.hasPrefix(Self.optimisticRunPrefix)
         {
-            return nil
+            return
         }
         let previousRun = activeRuns.removeValue(forKey: run.sessionId)
         let outcome = runOutcomes.removeValue(forKey: run.sessionId)
         guard previousRun != nil || outcome != nil else {
-            return nil
+            return
         }
         pendingRunVerifications[run.sessionId] = nil
 
@@ -987,29 +975,11 @@ final class DesktopClient: Identifiable {
             }
         }
 
-        guard !isSubAgentSession(run.sessionId),
-              let outcome,
-              outcome.sawCompletedTurn,
-              !outcome.sawError,
-              !outcome.wasAborted
-        else {
-            return nil
-        }
-        let dedupeKey = effectiveRunId.isEmpty
-            ? "\(run.sessionId)#\(Int(run.updatedAt))"
-            : "\(run.sessionId)#\(effectiveRunId)"
-        guard markRunNotified(dedupeKey) else { return nil }
-        return [
-            "sessionId": .string(run.sessionId),
-            "runId": .string(effectiveRunId),
-            "sessionTitle": .string(session(id: run.sessionId)?.title ?? ""),
-        ]
     }
 
     private func resolvePendingRunVerification(
         sessionId: String,
         generation current: Int,
-        fallbackTitle: String? = nil,
         fallbackUpdatedAt: Double? = nil
     ) async {
         guard current == generation,
@@ -1114,21 +1084,7 @@ final class DesktopClient: Identifiable {
                 }
                 recordViewedWatermark(sessionId, updatedAt: max(latestEntryTimestamp, fallbackUpdatedAt ?? 0))
             }
-            let updatedAt = session(id: sessionId)?.updatedAt ?? fallbackUpdatedAt ?? 0
-            let title = session(id: sessionId)?.title ?? fallbackTitle ?? ""
-            let dedupeKey = pending.runId.isEmpty
-                ? "\(sessionId)#verified-\(Int(updatedAt))"
-                : "\(sessionId)#\(pending.runId)"
-            if markRunNotified(dedupeKey) {
-                emit(DesktopEvent(
-                    kind: DesktopEvent.turnCompleted,
-                    payload: [
-                        "sessionId": .string(sessionId),
-                        "runId": .string(pending.runId),
-                        "sessionTitle": .string(title),
-                    ]
-                ))
-            }
+
         case .error:
             pendingRunVerifications[sessionId] = nil
             if canMarkUnread {
@@ -1162,7 +1118,6 @@ final class DesktopClient: Identifiable {
                     await self?.resolvePendingRunVerification(
                         sessionId: sessionId,
                         generation: current,
-                        fallbackTitle: fallbackTitle,
                         fallbackUpdatedAt: fallbackUpdatedAt
                     )
                 }
@@ -1173,7 +1128,6 @@ final class DesktopClient: Identifiable {
                     await self?.resolvePendingRunVerification(
                         sessionId: sessionId,
                         generation: current,
-                        fallbackTitle: fallbackTitle,
                         fallbackUpdatedAt: fallbackUpdatedAt
                     )
                 }
@@ -1509,26 +1463,12 @@ final class DesktopClient: Identifiable {
                !latestPending.sawError
             {
                 pendingRunVerifications[sessionId] = nil
-                let oldRunId = snapshot.runId
-                let dedupeKey = oldRunId.isEmpty
-                    ? "\(sessionId)#resync-\(Int(rawSession.updatedAt))"
-                    : "\(sessionId)#\(oldRunId)"
-                guard markRunNotified(dedupeKey) else { continue }
-                emit(DesktopEvent(
-                    kind: DesktopEvent.turnCompleted,
-                    payload: [
-                        "sessionId": .string(sessionId),
-                        "runId": .string(oldRunId),
-                        "sessionTitle": .string(session(id: sessionId)?.title ?? rawSession.title),
-                    ]
-                ))
                 continue
             }
 
             await resolvePendingRunVerification(
                 sessionId: sessionId,
                 generation: current,
-                fallbackTitle: rawSession.title,
                 fallbackUpdatedAt: rawSession.updatedAt
             )
             guard current == generation, state == .connected else {
@@ -1575,17 +1515,6 @@ final class DesktopClient: Identifiable {
             return .completed
         }
         return .notYetPersisted
-    }
-
-    private func markRunNotified(_ key: String) -> Bool {
-        guard !notifiedRunKeys.contains(key) else { return false }
-        notifiedRunKeys.insert(key)
-        notifiedRunKeyOrder.append(key)
-        if notifiedRunKeyOrder.count > Self.maxNotifiedRunKeys {
-            let evicted = notifiedRunKeyOrder.removeFirst()
-            notifiedRunKeys.remove(evicted)
-        }
-        return true
     }
 
     private func resetTurnOutcomeTracking() {
@@ -1841,21 +1770,6 @@ final class DesktopClient: Identifiable {
         activeRuns[sessionId] != nil
     }
 
-    // Active top-level conversations ordered by run update timestamp, excluding sub-agents.
-    var activeTopLevelSessions: [(sessionId: String, title: String)] {
-        activeRuns.values
-            .filter { $0.status != "idle" && !isSubAgentSession($0.sessionId) }
-            .sorted {
-                if $0.updatedAt != $1.updatedAt {
-                    return $0.updatedAt < $1.updatedAt
-                }
-                return $0.sessionId < $1.sessionId
-            }
-            .map { run in
-                (sessionId: run.sessionId, title: session(id: run.sessionId)?.title ?? "")
-            }
-    }
-
     // Models enabled in the desktop settings, in the desktop's configured order.
     var availableModels: [RemoteModel] {
         let enabled = models.filter { !defaults.disabledModels.contains($0.id) }
@@ -2063,7 +1977,6 @@ final class DesktopClient: Identifiable {
                     isExplicitCompaction: isCompaction
                 )
             }
-            emit(DesktopEvent(kind: DesktopEvent.localRunsChanged, payload: ["sessionId": .string(sessionId)]))
             Task { @MainActor [weak self] in
                 // Drop the placeholder if the desktop never reports the run.
                 try? await Task.sleep(for: .seconds(20))
@@ -2072,7 +1985,6 @@ final class DesktopClient: Identifiable {
                 if self.runOutcomes[sessionId]?.runId == runId {
                     self.runOutcomes[sessionId] = nil
                 }
-                self.emit(DesktopEvent(kind: DesktopEvent.localRunsChanged, payload: ["sessionId": .string(sessionId)]))
             }
         }
         do {
@@ -2083,7 +1995,6 @@ final class DesktopClient: Identifiable {
                 if runOutcomes[sessionId]?.runId == optimisticRunId {
                     runOutcomes[sessionId] = nil
                 }
-                emit(DesktopEvent(kind: DesktopEvent.localRunsChanged, payload: ["sessionId": .string(sessionId)]))
             }
             throw error
         }
@@ -2112,7 +2023,6 @@ final class DesktopClient: Identifiable {
         _ = try await call("session:abortRun", [.string(sessionId)])
         if activeRuns[sessionId]?.runId.hasPrefix(Self.optimisticRunPrefix) == true {
             activeRuns[sessionId] = nil
-            emit(DesktopEvent(kind: DesktopEvent.localRunsChanged, payload: ["sessionId": .string(sessionId)]))
         }
     }
 
@@ -2957,6 +2867,22 @@ final class DesktopClient: Identifiable {
     // Stops the desktop from auto-selecting the recommended option while the user types.
     func cancelAskCountdown(sessionId: String, toolCallId: String) async throws -> Bool {
         try await call("ask:cancelCountdown", [.string(sessionId), .string(toolCallId)]).boolValue == true
+    }
+
+    // MARK: - Push notifications
+
+    // Registers this iOS device token with the desktop; ignores RPC errors from older desktops.
+    func registerNotificationClient(_ registration: NotificationClientRegistration) async {
+        _ = try? await call("notification:registerClient", [registration.json])
+    }
+
+    // Unregisters this iOS device from the desktop; ignores RPC errors from older desktops.
+    func unregisterNotificationClient(clientId: String, connectionId: String) async {
+        let payload: JSONValue = [
+            "clientId": .string(clientId),
+            "connectionId": .string(connectionId),
+        ]
+        _ = try? await call("notification:unregisterClient", [payload])
     }
 
     // MARK: - Helpers
