@@ -8,7 +8,9 @@ struct ThreadView: View {
 
     var body: some View {
         if let client = store.client(for: connectionId) {
+            // Key by connection and session so replacing a thread route in place never reuses another conversation's state.
             ThreadContent(client: client, sessionId: sessionId)
+                .id("\(client.id.uuidString)/\(sessionId)")
         } else {
             ContentUnavailableView(
                 "连接不可用",
@@ -337,6 +339,15 @@ private struct ThreadContent: View {
         }
         .onChange(of: sheetModelId) {
             normalizeSheetSelection()
+        }
+        .onChange(of: router.externalNavigationRevision) { _, _ in
+            showsAttachmentMenu = false
+            showsReasoningSlider = false
+            showsModelSheet = false
+            showsAsk = false
+            panelTab = nil
+            showsRename = false
+            errorMessage = nil
         }
         .sheet(isPresented: $showsModelSheet, onDismiss: applyModelSheet) {
             AdvancedSettingsSheet(

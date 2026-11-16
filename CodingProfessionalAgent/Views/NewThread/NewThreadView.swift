@@ -209,6 +209,12 @@ struct NewThreadView: View {
         .onChange(of: modelId) {
             applyDefaults()
         }
+        .onChange(of: router.externalNavigationRevision) { _, _ in
+            showsAttachmentMenu = false
+            showsReasoningSlider = false
+            showsAdvancedSettings = false
+            errorMessage = nil
+        }
         .task(id: branchQueryKey) {
             await loadBranches()
         }

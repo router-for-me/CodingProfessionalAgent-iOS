@@ -163,7 +163,9 @@ struct SubAgentView: View {
 
     var body: some View {
         if let client = store.client(for: connectionId) {
+            // Key by full sub-agent path so replacing the navigation stack never reuses stale state.
             SubAgentContent(client: client, parentSessionId: parentSessionId, agentId: agentId, sessionId: sessionId)
+                .id("\(client.id.uuidString)/\(parentSessionId)/\(agentId)/\(sessionId)")
         } else {
             ContentUnavailableView(
                 "连接不可用",
@@ -280,6 +282,9 @@ private struct SubAgentContent: View {
         }
         .onDisappear {
             model.deactivate()
+        }
+        .onChange(of: router.externalNavigationRevision) { _, _ in
+            forkError = nil
         }
     }
 

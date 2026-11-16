@@ -751,6 +751,33 @@ final class TurnNotificationCoordinatorTests: XCTestCase {
         XCTAssertTrue(client.hasSynced)
     }
 
+    func testNotificationDelegateBridgeBuffersColdLaunchTapBeforeWiringAndTrimsPayload() async throws {
+        let bridge = NotificationDelegateBridge()
+        let connectionId = UUID()
+        var completionRan = false
+
+        bridge.handleDidReceive(
+            actionIdentifier: UNNotificationDefaultActionIdentifier,
+            userInfo: [
+                "connectionId": "  \(connectionId.uuidString) \n",
+                "sessionId": " sess-cold-launch ",
+            ]
+        ) {
+            MainActor.assumeIsolated {
+                completionRan = true
+            }
+        }
+        XCTAssertTrue(completionRan)
+
+        var opened: [(UUID, String)] = []
+        bridge.onOpenSession = { cid, sid in
+            opened.append((cid, sid))
+        }
+        XCTAssertEqual(opened.count, 1)
+        XCTAssertEqual(opened.first?.0, connectionId)
+        XCTAssertEqual(opened.first?.1, "sess-cold-launch")
+    }
+
     private func waitUntil(_ label: String, timeout: Double = 3.0, condition: () -> Bool) async throws {
         let deadline = Date().addingTimeInterval(timeout)
         while !condition() {

@@ -30,10 +30,13 @@ final class SystemUserNotificationManager: UserNotificationManaging {
     private let delegateBridge: NotificationDelegateBridge
     private var hasRequestedAuthorization = false
 
-    init(center: UNUserNotificationCenter = .current()) {
+    init(
+        center: UNUserNotificationCenter = .current(),
+        delegateBridge: NotificationDelegateBridge? = nil
+    ) {
         self.center = center
-        self.delegateBridge = NotificationDelegateBridge()
-        center.delegate = delegateBridge
+        self.delegateBridge = delegateBridge ?? (center === UNUserNotificationCenter.current() ? .shared : NotificationDelegateBridge())
+        center.delegate = self.delegateBridge
     }
 
     func isAuthorized() async -> Bool {
@@ -80,8 +83,15 @@ final class SystemRemoteNotificationRegistrar: RemoteNotificationRegistering {
 // Use explicit completion-handler delegate methods instead of Swift `async` witnesses so
 // UIKit's completion handlers are never invoked on the cooperative background thread pool.
 final class NotificationDelegateBridge: NSObject, UNUserNotificationCenterDelegate, @unchecked Sendable {
-    @MainActor var onOpenSession: (@MainActor (_ connectionId: UUID, _ sessionId: String) -> Void)?
+    static let shared = NotificationDelegateBridge()
+
+    @MainActor var onOpenSession: (@MainActor (_ connectionId: UUID, _ sessionId: String) -> Void)? {
+        didSet {
+            flushPendingOpenTargetIfPossible()
+        }
+    }
     @MainActor var isForegroundSuppressed: (@MainActor () -> Bool)?
+    @MainActor private var pendingOpenTarget: (connectionId: UUID, sessionId: String)?
 
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
@@ -123,9 +133,27 @@ final class NotificationDelegateBridge: NSObject, UNUserNotificationCenterDelega
         runOnMainActor { [weak self] in
             defer { sendableCompletion.value() }
             if let target {
-                self?.onOpenSession?(target.connectionId, target.sessionId)
+                self?.deliverOpenSession(connectionId: target.connectionId, sessionId: target.sessionId)
             }
         }
+    }
+
+    @MainActor
+    private func deliverOpenSession(connectionId: UUID, sessionId: String) {
+        if let onOpenSession {
+            pendingOpenTarget = nil
+            onOpenSession(connectionId, sessionId)
+        } else {
+            // Buffer taps delivered during cold launch before TurnNotificationCoordinator wires its handler.
+            pendingOpenTarget = (connectionId, sessionId)
+        }
+    }
+
+    @MainActor
+    private func flushPendingOpenTargetIfPossible() {
+        guard let onOpenSession, let target = pendingOpenTarget else { return }
+        pendingOpenTarget = nil
+        onOpenSession(target.connectionId, target.sessionId)
     }
 
     private static func parseOpenSessionTarget(
@@ -134,10 +162,13 @@ final class NotificationDelegateBridge: NSObject, UNUserNotificationCenterDelega
     ) -> (connectionId: UUID, sessionId: String)? {
         guard actionIdentifier == UNNotificationDefaultActionIdentifier,
               let rawConnectionId = userInfo["connectionId"] as? String,
-              let connectionId = UUID(uuidString: rawConnectionId),
-              let sessionId = userInfo["sessionId"] as? String,
-              !sessionId.isEmpty
+              let connectionId = UUID(uuidString: rawConnectionId.trimmingCharacters(in: .whitespacesAndNewlines)),
+              let rawSessionId = userInfo["sessionId"] as? String
         else {
+            return nil
+        }
+        let sessionId = rawSessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !sessionId.isEmpty else {
             return nil
         }
         return (connectionId, sessionId)

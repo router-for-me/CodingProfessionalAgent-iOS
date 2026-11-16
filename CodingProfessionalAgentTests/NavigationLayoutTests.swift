@@ -380,4 +380,79 @@ final class NavigationLayoutTests: XCTestCase {
         RunLoop.main.run(until: Date().addingTimeInterval(0.05))
         XCTAssertEqual(defaults.object(forKey: PreferenceKey.notifyOnTurnComplete) as? Bool, false)
     }
+
+    func testOpenThreadReplacesActiveThreadViewIdentityAndClearsUnreadState() throws {
+        let suiteName = "NavigationLayoutTests.Replace.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        let store = ConnectionStore(defaults: defaults, persistsCredentials: false)
+        let connection = DesktopConnection(
+            id: UUID(),
+            name: "Test Mac",
+            host: "127.0.0.1",
+            port: 59999,
+            icon: .laptop,
+            isEnabled: false
+        )
+        store.add(connection, password: "")
+        defer {
+            store.remove(connection.id)
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+
+        let client = try XCTUnwrap(store.client(for: connection.id))
+        func emitMeta(id: String, title: String, unread: Bool, timestamp: Double) throws {
+            let envelope: JSONValue = [
+                "type": "event",
+                "event": [
+                    "kind": "session:meta-updated",
+                    "data": [
+                        "id": .string(id),
+                        "title": .string(title),
+                        "unread": .bool(unread),
+                        "createdAt": .number(timestamp),
+                        "updatedAt": .number(timestamp),
+                    ],
+                ],
+            ]
+            client.ingestServerMessage(Data(try envelope.jsonString().utf8))
+        }
+        try emitMeta(id: "sess-A", title: "Session Alpha", unread: true, timestamp: 1)
+        try emitMeta(id: "sess-B", title: "Session Beta", unread: true, timestamp: 2)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        XCTAssertEqual(client.session(id: "sess-A")?.isUnread, true)
+        XCTAssertEqual(client.session(id: "sess-B")?.isUnread, true)
+
+        let router = Router()
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene: scene)
+        window.frame = CGRect(x: 0, y: 0, width: 440, height: 956)
+        window.rootViewController = UIHostingController(
+            rootView: HomeView()
+                .environment(router)
+                .environment(store)
+        )
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+        }
+
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        let navController = try XCTUnwrap(Self.findNavigationController(in: window.rootViewController))
+
+        router.push(.thread(connectionId: connection.id, sessionId: "sess-A"))
+        RunLoop.main.run(until: Date().addingTimeInterval(0.6))
+        XCTAssertEqual(navController.viewControllers.count, 2)
+        XCTAssertEqual(client.session(id: "sess-A")?.isUnread, false)
+        XCTAssertEqual(client.session(id: "sess-B")?.isUnread, true)
+
+        // Switching directly from an active thread via notification tap must recreate ThreadContent for sess-B
+        // rather than reusing sess-A's ThreadModel or popping back to Home.
+        router.openThread(connectionId: connection.id, sessionId: "sess-B")
+        RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+        window.layoutIfNeeded()
+        XCTAssertEqual(router.path, [.thread(connectionId: connection.id, sessionId: "sess-B")])
+        XCTAssertEqual(navController.viewControllers.count, 2)
+        XCTAssertEqual(client.session(id: "sess-B")?.isUnread, false)
+    }
 }

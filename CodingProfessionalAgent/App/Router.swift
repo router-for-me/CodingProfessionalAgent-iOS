@@ -46,7 +46,11 @@ final class Router {
         externalNavigationRevision += 1
         let destination = Route.thread(connectionId: connectionId, sessionId: sessionId)
         if path != [destination] {
-            path = [destination]
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                path = [destination]
+            }
         }
     }
 }

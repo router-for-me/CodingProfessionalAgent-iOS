@@ -238,6 +238,9 @@ struct HomeView: View {
                 showsAddConnectionDialog = false
                 editingProject = nil
                 worktreeTarget = nil
+                renameTarget = nil
+                removalTarget = nil
+                errorMessage = nil
             }
             .task(id: composerSkillsKey) {
                 await composerClient?.loadSkills(projectPath: composerProjectPath)

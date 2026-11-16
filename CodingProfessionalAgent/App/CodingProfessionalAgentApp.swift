@@ -1,6 +1,7 @@
 import os
 import SwiftUI
 import UIKit
+import UserNotifications
 
 // Captures APNs registration callbacks and buffers tokens delivered before SwiftUI wires the coordinator.
 @MainActor
@@ -18,6 +19,23 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
                 onDeviceToken(pendingDeviceToken)
             }
         }
+    }
+
+    func application(
+        _ application: UIApplication,
+        willFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
+    ) -> Bool {
+        // Attach the shared UNUserNotificationCenter delegate before launch finishes so cold-launch taps are never missed.
+        UNUserNotificationCenter.current().delegate = NotificationDelegateBridge.shared
+        return true
+    }
+
+    func application(
+        _ application: UIApplication,
+        didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
+    ) -> Bool {
+        UNUserNotificationCenter.current().delegate = NotificationDelegateBridge.shared
+        return true
     }
 
     func application(
