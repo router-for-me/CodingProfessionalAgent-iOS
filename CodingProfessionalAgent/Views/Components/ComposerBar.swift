@@ -126,7 +126,7 @@ struct ExpandedComposer: View {
             HStack(spacing: 4) {
                 ComposerIconButton(systemImage: "plus", action: onAttach)
                     .disabled(isSending)
-                    .accessibilityLabel("添加附件")
+                    .accessibilityLabel(L10n.Composer.addAttachment)
                 Spacer()
                 Button(action: onReasoning) {
                     HStack(spacing: 2) {
@@ -205,6 +205,7 @@ struct ComposerIconButton: View {
 // Trailing composer button: send when there is something to send, stop while a run is active, resume when
 // paused, and an inactive send arrow otherwise (matching the desktop composer).
 private struct ComposerActionButton: View {
+    @Environment(\.locale) private var locale
     let hasContent: Bool
     var canSend = true
     var isRunning = false
@@ -214,21 +215,22 @@ private struct ComposerActionButton: View {
     var onResume: () -> Void = {}
 
     var body: some View {
+        let _ = locale
         if hasContent {
             AccentCircleButton(systemImage: "arrow.up", action: onSubmit)
                 .allowsHitTesting(canSend)
                 .opacity(canSend ? 1 : 0.5)
-                .accessibilityLabel("发送")
+                .accessibilityLabel(L10n.Composer.send)
         } else if isRunning {
             AccentCircleButton(systemImage: "stop.fill", action: onStop)
-                .accessibilityLabel("停止")
+                .accessibilityLabel(L10n.Composer.stop)
         } else if canResume {
             AccentCircleButton(systemImage: "play.fill", action: onResume)
-                .accessibilityLabel("继续")
+                .accessibilityLabel(L10n.Composer.resume)
         } else {
             AccentCircleButton(systemImage: "arrow.up", action: {})
                 .allowsHitTesting(false)
-                .accessibilityLabel("发送")
+                .accessibilityLabel(L10n.Composer.send)
         }
     }
 }

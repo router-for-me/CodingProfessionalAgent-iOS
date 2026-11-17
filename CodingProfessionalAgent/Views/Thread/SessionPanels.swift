@@ -16,7 +16,7 @@ private struct GlassCapsule: ViewModifier {
 
 // MARK: - Panel tab
 
-// The "更改" and "文件" menu items open the same panel on different tabs, like the
+// The "Changes" and "Files" menu items open the same panel on different tabs, like the
 // desktop's right sidebar where the review and file manager are sibling panels.
 enum SessionPanelTab: String, Identifiable {
     case changes
@@ -141,7 +141,7 @@ private struct PanelHeader: View {
                             .contentShape(Rectangle())
                     }
                     .tint(.primary)
-                    .accessibilityLabel(allExpanded ? "折叠全部" : "展开全部")
+                    .accessibilityLabel(allExpanded ? L10n.Panels.collapseAll : L10n.Panels.expandAll)
                 }
                 Button(action: onClose) {
                     Image(systemName: "xmark")
@@ -151,7 +151,7 @@ private struct PanelHeader: View {
                         .contentShape(Rectangle())
                 }
                 .tint(.primary)
-                .accessibilityLabel("关闭")
+                .accessibilityLabel(L10n.Common.close)
             }
             .modifier(GlassCapsule(circular: !hasExpandButton))
             .padding(.trailing, 20)
@@ -162,7 +162,7 @@ private struct PanelHeader: View {
     }
 }
 
-// Segmented control like the screenshots: 已修改 / 所有文件, full width.
+// Segmented control like the screenshots: Modified / All Files, full width.
 private struct PanelTabs: View {
     let leftTitle: String
     let rightTitle: String
@@ -268,14 +268,16 @@ private struct DiffLineRow: View {
 
 // Card of one changed file like the screenshots: a gray rounded card whose header row
 // (bold name, gray directory, +add -del counts, open-file button) toggles the diff
-// content - a gray "第 X-Y 行" hunk header and edge-to-edge colored diff rows.
+// content - a gray "Lines X-Y" hunk header and edge-to-edge colored diff rows.
 private struct DiffFileCard: View {
+    @Environment(\.locale) private var locale
     let file: GitDiffFile
     let isExpanded: Bool
     let onToggle: () -> Void
     let onOpen: (String) -> Void
 
     var body: some View {
+        let _ = locale
         VStack(alignment: .leading, spacing: 0) {
             Button(action: onToggle) {
                 HStack(alignment: .center) {
@@ -301,7 +303,7 @@ private struct DiffFileCard: View {
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("打开文件")
+                    .accessibilityLabel(L10n.Panels.openFile)
                 }
                 .padding(.leading, 16)
                 .padding(.trailing, 10)
@@ -322,14 +324,14 @@ private struct DiffFileCard: View {
     @ViewBuilder
     private var expandedContent: some View {
         if file.isBinary {
-            Text("二进制文件已修改")
+            Text(L10n.Panels.binaryChanged)
                 .font(.system(size: 14))
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(14)
                 .background(Color(.systemBackground))
         } else if file.hunks.isEmpty {
-            Text("无差异")
+            Text(L10n.Panels.noDiff)
                 .font(.system(size: 14))
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -355,7 +357,7 @@ private struct DiffFileCard: View {
             Image(systemName: "chevron.down")
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(.secondary)
-            Text("第 \(hunk.newStart)-\(hunk.newStart + max(hunk.newLines - 1, 0)) 行")
+            Text(L10n.Panels.hunkLines(hunk.newStart, hunk.newStart + max(hunk.newLines - 1, 0)))
                 .font(.system(size: 14))
                 .foregroundStyle(.primary)
             Spacer()
@@ -377,12 +379,13 @@ private struct DiffFileCard: View {
 
 // MARK: - Session panel sheet
 
-// One sheet shared by the "更改" and "文件" menu items: the header/tabs switch between
-// the diff view (已修改, project title + branch stats + expand-all button + branch
-// bar) and the file tree (所有文件, "文件" title + floating search), like the
+// One sheet shared by the "Changes" and "Files" menu items: the header/tabs switch between
+// the diff view (Modified, project title + branch stats + expand-all button + branch
+// bar) and the file tree (All Files, "Files" title + floating search), like the
 // screenshots and the desktop's sibling right-panel views.
 struct SessionPanelSheet: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.locale) private var locale
     let client: DesktopClient
     let session: RemoteSession?
     let initialTab: SessionPanelTab
@@ -428,7 +431,7 @@ struct SessionPanelSheet: View {
             ?? sessionProject?.name
             ?? session?.worktreePath?.pathFileName
             ?? workingPath?.pathFileName
-            ?? "更改"
+            ?? L10n.Panels.changes
     }
 
     private var allExpanded: Bool {
@@ -436,9 +439,10 @@ struct SessionPanelSheet: View {
     }
 
     var body: some View {
+        let _ = locale
         VStack(spacing: 0) {
             header
-            PanelTabs(leftTitle: "已修改", rightTitle: "所有文件", isRightSelected: $showsAllFiles)
+            PanelTabs(leftTitle: L10n.Panels.modified, rightTitle: L10n.Panels.allFiles, isRightSelected: $showsAllFiles)
                 .padding(.bottom, 8)
 
             if showsAllFiles {
@@ -467,8 +471,8 @@ struct SessionPanelSheet: View {
         .sheet(item: $openedFile) { file in
             FilePreviewSheet(client: client, file: file)
         }
-        .alert("操作失败", isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) {
-            Button("好", role: .cancel) {}
+        .alert(L10n.Common.actionFailed, isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) {
+            Button(L10n.Common.ok, role: .cancel) {}
         } message: {
             Text(errorMessage ?? "")
         }
@@ -478,13 +482,13 @@ struct SessionPanelSheet: View {
     private var header: some View {
         if showsAllFiles {
             PanelHeader(
-                title: "文件",
+                title: L10n.Panels.files,
                 onClose: { dismiss() }
             )
         } else {
             PanelHeader(
                 title: projectName,
-                subtitle: "分支",
+                subtitle: L10n.Panels.branch,
                 additions: summary.totalAdditions,
                 deletions: summary.totalDeletions,
                 projects: client.projects,
@@ -521,16 +525,16 @@ struct SessionPanelSheet: View {
     @ViewBuilder
     private var diffContent: some View {
         if workingPath == nil {
-            ContentUnavailableView("未选择项目", systemImage: "folder", description: Text("该对话没有关联的项目目录。"))
+            ContentUnavailableView(L10n.Panels.noProjectTitle, systemImage: "folder", description: Text(L10n.Panels.noProjectMessage))
         } else if isLoading && summary.files.isEmpty {
             ProgressView()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if !isGitRepo {
-            ContentUnavailableView("当前项目不是 Git 仓库", systemImage: "exclamationmark.triangle", description: Text(workingPath ?? ""))
+            ContentUnavailableView(L10n.Panels.notGitRepo, systemImage: "exclamationmark.triangle", description: Text(workingPath ?? ""))
         } else if compareFailed {
-            ContentUnavailableView("无法比较分支", systemImage: "exclamationmark.triangle", description: Text("请检查基准分支是否存在。"))
+            ContentUnavailableView(L10n.Panels.compareFailedTitle, systemImage: "exclamationmark.triangle", description: Text(L10n.Panels.compareFailedMessage))
         } else if summary.files.isEmpty {
-            ContentUnavailableView("暂无代码更改", systemImage: "arrow.triangle.branch", description: Text("当前工作区与对比目标代码一致。"))
+            ContentUnavailableView(L10n.Panels.noChangesTitle, systemImage: "arrow.triangle.branch", description: Text(L10n.Panels.noChangesMessage))
         } else {
             ScrollView {
                 LazyVStack(spacing: 10) {
@@ -566,9 +570,9 @@ struct SessionPanelSheet: View {
                     comparesBranches = false
                 } label: {
                     if !comparesBranches {
-                        Label("工作区更改", systemImage: "checkmark")
+                        Label(L10n.Panels.workingTreeChanges, systemImage: "checkmark")
                     } else {
-                        Text("工作区更改")
+                        Text(L10n.Panels.workingTreeChanges)
                     }
                 }
                 Divider()
@@ -715,6 +719,7 @@ private struct FileTreeEntry: Identifiable, Hashable {
 // load lazily, files open in the preview. The .git and build folders are skipped (same
 // list as the desktop filter); a floating capsule at the bottom filters by name.
 private struct SessionFileTree: View {
+    @Environment(\.locale) private var locale
     let client: DesktopClient
     let rootPath: String?
     let onOpen: (String) -> Void
@@ -729,14 +734,15 @@ private struct SessionFileTree: View {
     private static let skippedNames: Set<String> = [".git", "node_modules", "dist", ".next", "coverage"]
 
     var body: some View {
+        let _ = locale
         Group {
             if rootPath == nil {
-                ContentUnavailableView("未选择项目", systemImage: "folder")
+                ContentUnavailableView(L10n.Panels.noProjectTitle, systemImage: "folder")
             } else if isLoading && entries.isEmpty {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if filteredEntries.isEmpty {
-                ContentUnavailableView("未找到匹配的文件", systemImage: "doc.magnifyingglass")
+                ContentUnavailableView(L10n.Panels.noMatchingFiles, systemImage: "doc.magnifyingglass")
             } else {
                 List {
                     ForEach(filteredEntries) { entry in
@@ -758,7 +764,7 @@ private struct SessionFileTree: View {
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass")
                     .foregroundStyle(.secondary)
-                TextField("搜索文件", text: $query)
+                TextField(L10n.Panels.searchFiles, text: $query)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
             }
@@ -915,6 +921,7 @@ private struct FileTreeRow: View {
 private struct FilePreviewSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.locale) private var locale
     let client: DesktopClient
     let file: OpenedFile
 
@@ -926,10 +933,11 @@ private struct FilePreviewSheet: View {
     }
 
     var body: some View {
+        let _ = locale
         NavigationStack {
             Group {
                 if let errorMessage {
-                    ContentUnavailableView("无法读取文件", systemImage: "exclamationmark.triangle", description: Text(errorMessage))
+                    ContentUnavailableView(L10n.Panels.unableReadFile, systemImage: "exclamationmark.triangle", description: Text(errorMessage))
                 } else if let lines {
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 0) {
@@ -965,10 +973,10 @@ private struct FilePreviewSheet: View {
                     } label: {
                         Image(systemName: "doc.on.doc")
                     }
-                    .accessibilityLabel("复制文件路径")
+                    .accessibilityLabel(L10n.Panels.copyFilePath)
                 }
                 ToolbarItem(placement: .topBarLeading) {
-                    Button("关闭") { dismiss() }
+                    Button(L10n.Common.close) { dismiss() }
                 }
             }
         }

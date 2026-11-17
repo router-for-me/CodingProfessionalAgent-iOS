@@ -6,6 +6,7 @@ struct AskSheet: View {
     let onSubmit: (AskDecision) async throws -> Void
     let onCancelCountdown: () async -> Bool
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.locale) private var locale
     @State private var customText = ""
     @State private var isCancellingCountdown = false
     @State private var didCancelFromTyping = false
@@ -13,6 +14,7 @@ struct AskSheet: View {
     @State private var errorMessage: String?
 
     var body: some View {
+        let _ = locale
         NavigationStack {
             Form {
                 Section {
@@ -31,7 +33,7 @@ struct AskSheet: View {
                             }
                         }
                         if request.countdownDeadline != nil {
-                            Button("停止自动选择") {
+                            Button(L10n.Ask.stopAutoSelect) {
                                 cancelCountdown()
                             }
                             .foregroundStyle(Color.secondary)
@@ -44,7 +46,7 @@ struct AskSheet: View {
 
                 if request.allowCustom {
                     Section {
-                        TextField(request.customPrompt ?? "输入你的回答", text: $customText, axis: .vertical)
+                        TextField(request.customPrompt ?? L10n.Ask.customPlaceholder, text: $customText, axis: .vertical)
                             .lineLimit(1...5)
                             .onChange(of: customText) { _, text in
                                 // Typing a custom answer must not race the desktop auto-selection.
@@ -53,7 +55,7 @@ struct AskSheet: View {
                                     cancelCountdown()
                                 }
                             }
-                        Button("发送回答") {
+                        Button(L10n.Ask.sendAnswer) {
                             submit(.custom(customText.trimmingCharacters(in: .whitespacesAndNewlines)))
                         }
                         .disabled(customText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -62,7 +64,7 @@ struct AskSheet: View {
 
                 if request.allowSkip {
                     Section {
-                        Button("跳过") {
+                        Button(L10n.Ask.skip) {
                             submit(.skipped)
                         }
                     }
@@ -76,11 +78,11 @@ struct AskSheet: View {
                 }
             }
             .disabled(isSubmitting)
-            .navigationTitle("CPA 需要你的回答")
+            .navigationTitle(L10n.Ask.title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("稍后") {
+                    Button(L10n.Ask.later) {
                         dismiss()
                     }
                     .tint(Color.primary)
@@ -96,7 +98,7 @@ struct AskSheet: View {
                 Text(option.title)
                     .foregroundStyle(Color.primary)
                 if option.recommended == true {
-                    Text("推荐")
+                    Text(L10n.Ask.recommended)
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(Theme.accent)
                         .padding(.horizontal, 7)
@@ -118,7 +120,7 @@ struct AskSheet: View {
         if let deadline = request.countdownDeadline {
             TimelineView(.periodic(from: .now, by: 1)) { context in
                 let remaining = max(0, Int(((deadline - context.date.milliseconds) / 1000).rounded()))
-                Text(remaining > 0 ? "\(remaining) 秒后将自动选择推荐项" : "即将自动选择推荐项")
+                Text(remaining > 0 ? L10n.Ask.countdownSeconds(remaining) : L10n.Ask.autoSelectNow)
             }
         }
     }
@@ -130,7 +132,7 @@ struct AskSheet: View {
         errorMessage = nil
         Task {
             if !(await onCancelCountdown()) {
-                errorMessage = "无法停止自动选择，请重试"
+                errorMessage = L10n.Ask.cancelCountdownFailed
             }
             isCancellingCountdown = false
         }

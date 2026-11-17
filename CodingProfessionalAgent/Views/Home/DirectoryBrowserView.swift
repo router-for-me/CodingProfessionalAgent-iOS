@@ -2,6 +2,7 @@ import SwiftUI
 
 // Browses the desktop computer's folders to pick a project source folder (desktop `DirectoryBrowserModal`).
 struct DirectoryBrowserView: View {
+    @Environment(\.locale) private var locale
     let client: DesktopClient
     let onSelect: (String) -> Void
     @State private var currentPath = ""
@@ -17,6 +18,7 @@ struct DirectoryBrowserView: View {
     @State private var loadGeneration = 0
 
     var body: some View {
+        let _ = locale
         List {
             Section {
                 Text(currentPath.isEmpty ? " " : currentPath)
@@ -34,7 +36,7 @@ struct DirectoryBrowserView: View {
                     Button {
                         load(parent)
                     } label: {
-                        Label("上一级", systemImage: "arrow.turn.left.up")
+                        Label(L10n.Directory.up, systemImage: "arrow.turn.left.up")
                     }
                 }
             }
@@ -61,50 +63,50 @@ struct DirectoryBrowserView: View {
             if isLoading && folders.isEmpty {
                 ProgressView()
             } else if !isLoading && visibleFolders.isEmpty && !currentPath.isEmpty {
-                ContentUnavailableView("没有子文件夹", systemImage: "folder")
+                ContentUnavailableView(L10n.Directory.noSubfolders, systemImage: "folder")
             }
         }
-        .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "筛选文件夹")
-        .navigationTitle("选择项目目录")
+        .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: L10n.Directory.filterPlaceholder)
+        .navigationTitle(L10n.Directory.title)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
-                    Button("用户主目录", systemImage: "house") {
+                    Button(L10n.Directory.home, systemImage: "house") {
                         load(homePath)
                     }
                     .disabled(homePath.isEmpty)
-                    Button("根目录", systemImage: "externaldrive") {
+                    Button(L10n.Directory.root, systemImage: "externaldrive") {
                         load(RemotePath.root(of: currentPath.isEmpty ? homePath : currentPath))
                     }
                     // Typed paths reach other drives and network shares (desktop editable path).
-                    Button("前往路径…", systemImage: "arrow.right.circle") {
+                    Button(L10n.Directory.goToPathEllipsis, systemImage: "arrow.right.circle") {
                         pathInput = currentPath
                         showsPathInput = true
                     }
-                    Button("刷新", systemImage: "arrow.clockwise") {
+                    Button(L10n.Common.refresh, systemImage: "arrow.clockwise") {
                         load(currentPath)
                     }
                     .disabled(currentPath.isEmpty)
-                    Toggle("显示隐藏文件夹", systemImage: "eye", isOn: $showsHidden)
+                    Toggle(L10n.Directory.showHidden, systemImage: "eye", isOn: $showsHidden)
                 } label: {
                     Image(systemName: "ellipsis")
                 }
             }
             ToolbarItem(placement: .bottomBar) {
-                Button("选择此目录") {
+                Button(L10n.Directory.selectThis) {
                     onSelect(currentPath)
                 }
                 .buttonStyle(.glassProminent)
                 .disabled(currentPath.isEmpty || isLoading)
             }
         }
-        .alert("前往路径", isPresented: $showsPathInput) {
+        .alert(L10n.Directory.goToPath, isPresented: $showsPathInput) {
             TextField("/Users/name/Projects", text: $pathInput)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
-            Button("取消", role: .cancel) {}
-            Button("前往") {
+            Button(L10n.Common.cancel, role: .cancel) {}
+            Button(L10n.Directory.go) {
                 load(pathInput.trimmingCharacters(in: .whitespacesAndNewlines))
             }
         }

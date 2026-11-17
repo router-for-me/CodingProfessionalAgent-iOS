@@ -23,25 +23,25 @@ enum TunnelProtocolError: LocalizedError, Equatable, Sendable {
     var errorDescription: String? {
         switch self {
         case .emptyURL:
-            "请输入 CLIProxyAPI 地址。"
+            L10n.ErrorMessage.tunnelEmptyURL
         case .missingScheme:
-            "请包含 http:// 或 https:// 协议头。"
+            L10n.ErrorMessage.tunnelMissingScheme
         case .unsupportedScheme(let scheme):
-            "不支持 \(scheme):// 协议，请使用 http:// 或 https://。"
+            L10n.ErrorMessage.tunnelUnsupportedScheme(scheme)
         case .invalidURL(let detail):
             detail
         case .emptyAPIKey:
-            "请输入 CLIProxyAPI API Key。"
+            L10n.ErrorMessage.tunnelEmptyAPIKey
         case .invalidAPIKey:
-            "API Key 包含无效字符。"
+            L10n.ErrorMessage.tunnelInvalidAPIKey
         case .invalidUUID:
-            "设备标识格式无效。"
+            L10n.ErrorMessage.tunnelInvalidUUID
         case .payloadTooLarge:
-            "数据包超过 64 MiB 隧道传输上限。"
+            L10n.ErrorMessage.tunnelPayloadTooLarge
         case .malformedFrame(let detail):
-            "隧道数据帧格式错误（\(detail)）。"
+            L10n.ErrorMessage.tunnelMalformedFrame(detail)
         case .unsupportedVersion(let version):
-            "不支持的隧道协议版本（\(version)）。"
+            L10n.ErrorMessage.tunnelUnsupportedVersion(version)
         }
     }
 }
@@ -55,7 +55,7 @@ struct TunnelEndpoint: Equatable, Hashable, Sendable {
             throw TunnelProtocolError.invalidUUID
         }
         guard var components = URLComponents(string: webSocketBaseURL) else {
-            throw TunnelProtocolError.invalidURL("CLIProxyAPI 地址无效。")
+            throw TunnelProtocolError.invalidURL(L10n.ErrorMessage.tunnelInvalidURL)
         }
         let cleanName = TunnelProtocol.sanitizeClientName(clientName)
         let allowed = CharacterSet.urlQueryAllowed.subtracting(CharacterSet(charactersIn: "+&=?#"))
@@ -63,7 +63,7 @@ struct TunnelEndpoint: Equatable, Hashable, Sendable {
         let encodedName = cleanName.addingPercentEncoding(withAllowedCharacters: allowed) ?? cleanName
         components.percentEncodedQuery = "role=client&uuid=\(encodedUUID)&name=\(encodedName)"
         guard let url = components.url else {
-            throw TunnelProtocolError.invalidURL("CLIProxyAPI 地址无效。")
+            throw TunnelProtocolError.invalidURL(L10n.ErrorMessage.tunnelInvalidURL)
         }
         return url
     }
@@ -130,28 +130,28 @@ enum TunnelProtocol {
         }
 
         if trimmed.contains("#") {
-            return .failure(.invalidURL("地址不能包含 # 片段。"))
+            return .failure(.invalidURL(L10n.ErrorMessage.tunnelUrlHasFragment))
         }
         if trimmed.contains("?") {
-            return .failure(.invalidURL("地址不能包含查询参数。"))
+            return .failure(.invalidURL(L10n.ErrorMessage.tunnelUrlHasQuery))
         }
 
         let afterScheme = trimmed[schemeRange.upperBound...]
         let authorityEnd = afterScheme.firstIndex(of: "/") ?? afterScheme.endIndex
         let authoritySlice = afterScheme[..<authorityEnd]
         if authoritySlice.contains("@") {
-            return .failure(.invalidURL("地址不能包含用户名或密码。"))
+            return .failure(.invalidURL(L10n.ErrorMessage.tunnelUrlHasCredentials))
         }
 
         var explicitPort: Int?
         if authoritySlice.hasPrefix("[") {
             guard let closeBracket = authoritySlice.firstIndex(of: "]") else {
-                return .failure(.invalidURL("IPv6 主机地址格式无效。"))
+                return .failure(.invalidURL(L10n.ErrorMessage.tunnelInvalidIPv6))
             }
             let remainder = authoritySlice[authoritySlice.index(after: closeBracket)...]
             if !remainder.isEmpty {
                 guard remainder.hasPrefix(":") else {
-                    return .failure(.invalidURL("CLIProxyAPI 地址无效。"))
+                    return .failure(.invalidURL(L10n.ErrorMessage.tunnelInvalidURL))
                 }
                 let portDigits = remainder.dropFirst()
                 guard !portDigits.isEmpty,
@@ -159,21 +159,21 @@ enum TunnelProtocol {
                       let parsed = Int(portDigits),
                       (1...65535).contains(parsed)
                 else {
-                    return .failure(.invalidURL("端口号超出有效范围（1-65535）。"))
+                    return .failure(.invalidURL(L10n.ErrorMessage.tunnelInvalidPort))
                 }
                 explicitPort = parsed
             }
         } else if let colon = authoritySlice.firstIndex(of: ":") {
             let portDigits = authoritySlice[authoritySlice.index(after: colon)...]
             if portDigits.contains(":") {
-                return .failure(.invalidURL("IPv6 地址请使用方括号包裹，例如 [::1]。"))
+                return .failure(.invalidURL(L10n.ErrorMessage.tunnelIPv6Brackets))
             }
             guard !portDigits.isEmpty,
                   portDigits.allSatisfy({ $0 >= "0" && $0 <= "9" }),
                   let parsed = Int(portDigits),
                   (1...65535).contains(parsed)
             else {
-                return .failure(.invalidURL("端口号超出有效范围（1-65535）。"))
+                return .failure(.invalidURL(L10n.ErrorMessage.tunnelInvalidPort))
             }
             explicitPort = parsed
         }
@@ -182,30 +182,30 @@ enum TunnelProtocol {
               let rawHost = components.host,
               !rawHost.isEmpty
         else {
-            return .failure(.invalidURL("CLIProxyAPI 地址无效。"))
+            return .failure(.invalidURL(L10n.ErrorMessage.tunnelInvalidURL))
         }
 
         if (components.user != nil && !(components.user?.isEmpty ?? true)) ||
             (components.password != nil && !(components.password?.isEmpty ?? true))
         {
-            return .failure(.invalidURL("地址不能包含用户名或密码。"))
+            return .failure(.invalidURL(L10n.ErrorMessage.tunnelUrlHasCredentials))
         }
         if components.query != nil || components.fragment != nil {
-            return .failure(.invalidURL("地址不能包含查询参数或片段。"))
+            return .failure(.invalidURL(L10n.ErrorMessage.tunnelUrlHasQueryOrFragment))
         }
 
         let bareHost = rawHost
             .trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
             .lowercased()
         guard !bareHost.isEmpty else {
-            return .failure(.invalidURL("CLIProxyAPI 主机名无效。"))
+            return .failure(.invalidURL(L10n.ErrorMessage.tunnelInvalidHost))
         }
         let formattedHost = bareHost.contains(":") ? "[\(bareHost)]" : bareHost
 
         var portSuffix = ""
         if let port = explicitPort ?? components.port {
             guard (1...65535).contains(port) else {
-                return .failure(.invalidURL("端口号超出有效范围（1-65535）。"))
+                return .failure(.invalidURL(L10n.ErrorMessage.tunnelInvalidPort))
             }
             let defaultPort = isSecure ? 443 : 80
             if port != defaultPort {

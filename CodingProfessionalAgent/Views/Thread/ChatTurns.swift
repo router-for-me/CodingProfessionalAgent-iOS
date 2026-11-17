@@ -201,18 +201,18 @@ struct AssistantTurn {
         return max(0, completedAt - startedAt - effectivePausedMs)
     }
 
-    // Header text: "已处理 29s" while running, "已完成 4m 26s" or "执行中断，已执行 10s" afterwards.
+    // Header text: "Processed 29s" while running, "Completed 4m 26s" or "Execution interrupted, ran for 10s" afterwards.
     func headerTitle(now: Double, completedAt: Double?) -> String {
         let elapsed = elapsedMs(now: now, completedAt: completedAt)
         let time = Self.formatElapsed(elapsed)
         let hasDuration = isLive || (completedAt != nil && elapsed >= 1000)
         switch status {
         case .running:
-            return "已处理 \(time)"
+            return L10n.Turn.processing(time)
         case .aborted, .error:
-            return hasDuration ? "执行中断，已执行 \(time)" : "执行中断"
+            return hasDuration ? L10n.Turn.interrupted(time) : L10n.Turn.interruptedBare
         case .done:
-            return hasDuration ? "已完成 \(time)" : "已完成"
+            return hasDuration ? L10n.Turn.completed(time) : L10n.Turn.completedBare
         }
     }
 
@@ -559,18 +559,18 @@ enum ToolActivity {
         "subagent": "spawn_agent",
     ]
 
-    // Running and finished wording of tools without arguments in their summary.
-    private static let builtins: [String: (kind: ToolActivityKind, running: String, done: String)] = [
-        "memories_read": (.read, "正在读取记忆", "已读取记忆"),
-        "memories_search": (.read, "正在搜索记忆", "已搜索记忆"),
-        "memories_add": (.write, "正在写入记忆", "已写入记忆"),
-        "web_search": (.other, "正在在线搜索", "已在线搜索"),
-        "spawn_agent": (.other, "正在启动子代理", "已启动子代理"),
-        "send_message": (.other, "正在发送消息", "已发送消息"),
-        "stop_agent": (.other, "正在停止子代理", "已停止子代理"),
-        "session_search": (.other, "正在搜索会话", "已搜索会话"),
-        "session_create": (.other, "正在创建会话", "已创建会话"),
-        "create_session": (.other, "正在创建会话", "已创建会话"),
+    // Running and finished localization keys of tools without arguments in their summary.
+    private static let builtins: [String: (kind: ToolActivityKind, runningKey: String, doneKey: String)] = [
+        "memories_read": (.read, "tool.readingMemory", "tool.readMemory"),
+        "memories_search": (.read, "tool.searchingMemories", "tool.searchedMemories"),
+        "memories_add": (.write, "tool.writingMemory", "tool.wroteMemory"),
+        "web_search": (.other, "tool.searchingWeb", "tool.searchedWeb"),
+        "spawn_agent": (.other, "tool.spawningAgent", "tool.spawnedAgent"),
+        "send_message": (.other, "tool.sendingMessage", "tool.sentMessage"),
+        "stop_agent": (.other, "tool.stoppingAgent", "tool.stoppedAgent"),
+        "session_search": (.other, "tool.searchingSessions", "tool.searchedSessions"),
+        "session_create": (.other, "tool.creatingSession", "tool.createdSession"),
+        "create_session": (.other, "tool.creatingSession", "tool.createdSession"),
     ]
 
     private static let spawnAgentNames: Set<String> = ["spawn_agent", "delegate_agent", "subagent"]
@@ -603,53 +603,53 @@ enum ToolActivity {
 
     static func summarize(name: String, arguments: JSONValue, isRunning running: Bool) -> ToolActivitySummary {
         if isSkillRead(name: name, arguments: arguments) {
-            return ToolActivitySummary(kind: .skill, text: "已读取\(skillName(arguments)) 技能", isRunning: running)
+            return ToolActivitySummary(kind: .skill, text: L10n.Tool.skillRead(skillName(arguments)), isRunning: running)
         }
 
         switch name {
         case "bash", "shell", "pwsh", "powershell":
             if running, let command = line(string(arguments, "command") ?? string(arguments, "cmd"), limit: 64) {
-                return ToolActivitySummary(kind: .command, text: "正在运行 \(command)", isRunning: running)
+                return ToolActivitySummary(kind: .command, text: L10n.Tool.runningCommand(command), isRunning: running)
             }
-            return ToolActivitySummary(kind: .command, text: "加载了工具运行了命令", isRunning: running)
+            return ToolActivitySummary(kind: .command, text: L10n.Tool.loadedCommand, isRunning: running)
         case "read":
             let file = fileName(arguments) ?? name
-            return ToolActivitySummary(kind: .read, text: running ? "正在读取 \(file)" : "已读取 \(file)", isRunning: running)
+            return ToolActivitySummary(kind: .read, text: running ? L10n.Tool.readingFile(file) : L10n.Tool.readFile(file), isRunning: running)
         case "edit":
             let file = fileName(arguments) ?? name
-            return ToolActivitySummary(kind: .edit, text: running ? "正在编辑 \(file)" : "已编辑 \(file)", isRunning: running)
+            return ToolActivitySummary(kind: .edit, text: running ? L10n.Tool.editingFile(file) : L10n.Tool.editedFile(file), isRunning: running)
         case "write":
             let file = fileName(arguments) ?? name
-            return ToolActivitySummary(kind: .write, text: running ? "正在写入 \(file)" : "已写入 \(file)", isRunning: running)
+            return ToolActivitySummary(kind: .write, text: running ? L10n.Tool.writingFile(file) : L10n.Tool.wroteFile(file), isRunning: running)
         case "ask", "ask_user":
             let question = string(arguments, "question") ?? string(arguments, "prompt") ?? ""
             let short = question.count > 40 ? String(question.prefix(37)) + "…" : question
             let text = if running {
-                short.isEmpty ? "正在等待你的回答" : "正在询问 \(short)"
+                short.isEmpty ? L10n.Tool.waitingAnswer : L10n.Tool.askingQuestion(short)
             } else {
-                short.isEmpty ? "已完成询问" : "已询问 \(short)"
+                short.isEmpty ? L10n.Tool.answered : L10n.Tool.askedQuestion(short)
             }
             return ToolActivitySummary(kind: .ask, text: text, isRunning: running)
         case "manage_todo_list", "todo":
             let reads = arguments["operation"]?.stringValue == "read"
             let text = if running {
-                reads ? "正在读取待办事项" : "正在更新待办事项"
+                reads ? L10n.Tool.readingTodoList : L10n.Tool.updatingTodoList
             } else {
-                reads ? "已读取待办事项" : "已更新待办事项"
+                reads ? L10n.Tool.readTodoList : L10n.Tool.updatedTodoList
             }
             return ToolActivitySummary(kind: .other, text: text, isRunning: running)
         case "exec":
             let text = if let description = line(string(arguments, "description"), limit: 80) {
-                running ? "正在执行代码模式：\(description)" : "已执行代码模式：\(description)"
+                running ? L10n.Tool.executingCode(description) : L10n.Tool.executedCode(description)
             } else {
-                running ? "正在执行代码模式" : "已执行代码模式"
+                running ? L10n.Tool.executingCodeGeneric : L10n.Tool.executedCodeGeneric
             }
             return ToolActivitySummary(kind: .other, text: text, isRunning: running)
         case "set_session_title", "title":
             let text = if let title = line(string(arguments, "title"), limit: 64) {
-                running ? "正在设置标题为 \(title)" : "设置标题为 \(title)"
+                running ? L10n.Tool.settingTitle(title) : L10n.Tool.setTitle(title)
             } else {
-                running ? "正在设置标题" : "设置标题"
+                running ? L10n.Tool.settingTitleGeneric : L10n.Tool.setTitleGeneric
             }
             return ToolActivitySummary(kind: .other, text: text, isRunning: running)
         default:
@@ -657,10 +657,10 @@ enum ToolActivity {
         }
 
         if let builtin = builtins[aliases[name] ?? name] {
-            return ToolActivitySummary(kind: builtin.kind, text: running ? builtin.running : builtin.done, isRunning: running)
+            return ToolActivitySummary(kind: builtin.kind, text: L10n.string(running ? builtin.runningKey : builtin.doneKey), isRunning: running)
         }
         let displayName = humanize(name).isEmpty ? name : humanize(name)
-        return ToolActivitySummary(kind: .other, text: running ? "正在使用 \(displayName)" : "已使用 \(displayName)", isRunning: running)
+        return ToolActivitySummary(kind: .other, text: running ? L10n.Tool.using(displayName) : L10n.Tool.used(displayName), isRunning: running)
     }
 
     // Non-blank string argument, kept verbatim.

@@ -117,7 +117,7 @@ final class ThreadModel {
         if !client.isConnected {
             if !client.connection.isEnabled {
                 isLoading = false
-                connectionError = "桌面端连接已关闭"
+                connectionError = L10n.ErrorMessage.connectionDisabled
             } else if client.isTerminalFailure, case .failed(let message) = client.state {
                 isLoading = false
                 connectionError = message
@@ -318,10 +318,10 @@ final class ThreadModel {
     // The desktop only queues the request here; `failedEdit` reports an edit whose run never started.
     func edit(entryId: String, text: String, skillReferences: [SkillReference]) async throws {
         guard subAgent == nil, !isRunning else {
-            throw DesktopClientError.remote("对话正在运行，请先停止后再编辑")
+            throw DesktopClientError.remote(L10n.ErrorMessage.editWhileRunning)
         }
         guard let index = entries.firstIndex(where: { $0.id == entryId && $0.kind == .user }) else {
-            throw DesktopClientError.remote("要编辑的消息已不存在")
+            throw DesktopClientError.remote(L10n.ErrorMessage.editMessageGone)
         }
         let now = Date().milliseconds
         let session = self.session
@@ -458,7 +458,7 @@ final class ThreadModel {
 
     private func beginConnectionOrReload(wakeIfNeeded: Bool) {
         guard client.connection.isEnabled else {
-            finishGraceWithConnectionError("桌面端连接已关闭")
+            finishGraceWithConnectionError(L10n.ErrorMessage.connectionDisabled)
             return
         }
         if client.isConnected {
@@ -519,7 +519,7 @@ final class ThreadModel {
                     return
                 }
                 if !self.client.connection.isEnabled {
-                    self.finishGraceWithConnectionError("桌面端连接已关闭")
+                    self.finishGraceWithConnectionError(L10n.ErrorMessage.connectionDisabled)
                     return
                 }
                 if self.client.isTerminalFailure, case .failed(let message) = self.client.state {
@@ -540,7 +540,7 @@ final class ThreadModel {
                     }
                 case .connecting, .disconnected:
                     if elapsed >= self.graceConfig.connectingTimeout {
-                        self.finishGraceWithConnectionError("连接超时，请确认桌面端正在运行且网络连接正常。")
+                        self.finishGraceWithConnectionError(L10n.ErrorMessage.threadGraceTimedOut)
                         return
                     }
                     if clock.now - lastWakeAttempt >= self.graceConfig.retryInterval {
@@ -582,7 +582,7 @@ final class ThreadModel {
         }
         guard !hasLoadedEntries else { return }
         if !client.connection.isEnabled {
-            finishGraceWithConnectionError("桌面端连接已关闭")
+            finishGraceWithConnectionError(L10n.ErrorMessage.connectionDisabled)
             return
         }
         if client.isTerminalFailure, case .failed(let message) = client.state {
@@ -605,11 +605,9 @@ final class ThreadModel {
     private static func isConnectionTransportError(_ error: Error) -> Bool {
         if let clientError = error as? DesktopClientError {
             switch clientError {
-            case .notConnected, .timeout:
+            case .notConnected, .timeout, .tunnelServerOffline, .tunnelServerDisconnected:
                 return true
-            case .remote(let message):
-                return message == "远程桌面端不在线" || message == "远程桌面端已离线"
-            case .invalidAddress, .unauthorized, .http:
+            case .invalidAddress, .unauthorized, .http, .remote:
                 return false
             }
         }

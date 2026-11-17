@@ -78,7 +78,7 @@ final class ComposerHitTestingTests: XCTestCase {
                     Color.blue.frame(height: 1600)
                 }
                 .safeAreaInset(edge: .bottom) {
-                    ComposerBar(draft: $draft, placeholder: "向 CPA 提问")
+                    ComposerBar(draft: $draft, placeholder: L10n.Composer.askPlaceholder)
                         .padding(.horizontal, 38)
                         .padding(.bottom, 4)
                 }

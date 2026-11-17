@@ -64,6 +64,7 @@ struct CodingProfessionalAgentApp: App {
     @State private var router: Router
     @State private var store: ConnectionStore
     @State private var notificationCoordinator: TurnNotificationCoordinator
+    @State private var localization = LocalizationManager.shared
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage(PreferenceKey.notifyOnTurnComplete) private var notifyOnTurnComplete = true
 
@@ -85,6 +86,7 @@ struct CodingProfessionalAgentApp: App {
             HomeView()
                 .environment(router)
                 .environment(store)
+                .environment(\.locale, localization.effectiveLocale)
         }
         .onChange(of: scenePhase, initial: true) { _, phase in
             wireAppDelegateIfNeeded()

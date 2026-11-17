@@ -6,10 +6,13 @@ import UniformTypeIdentifiers
 
 // Separator for a compacted context.
 struct CompactionDivider: View {
+    @Environment(\.locale) private var locale
+
     var body: some View {
+        let _ = locale
         HStack(spacing: 10) {
             Rectangle().fill(Color(.separator)).frame(height: 0.5)
-            Text("上下文已压缩")
+            Text(L10n.Entry.compacted)
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
                 .fixedSize()
@@ -21,12 +24,14 @@ struct CompactionDivider: View {
 // Sent prompt with its images above the text, like the desktop; a long press offers copy, edit (when
 // `onEdit` is given) and share.
 struct UserBubble: View {
+    @Environment(\.locale) private var locale
     let entry: ConversationEntry
     let knownSkills: [RemoteSkill]
     var skillTrigger = SkillTrigger.dollar
     var onEdit: (() -> Void)?
 
     var body: some View {
+        let _ = locale
         let images = entry.sentImages
         HStack {
             Spacer(minLength: 60)
@@ -53,7 +58,7 @@ struct UserBubble: View {
                 }
 
                 if let pending = entry.pendingStatus {
-                    Text(pending == FollowUpMode.steer.rawValue ? "引导中" : "排队中")
+                    Text(pending == FollowUpMode.steer.rawValue ? L10n.Entry.steering : L10n.Entry.queued)
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                 }
@@ -66,16 +71,16 @@ struct UserBubble: View {
     private var menuItems: some View {
         let text = ComposerDraft.plainText(of: entry.promptParts(knownSkills: knownSkills), trigger: skillTrigger)
         if !text.isEmpty {
-            Button("拷贝", systemImage: "doc.on.doc") {
+            Button(L10n.Entry.copy, systemImage: "doc.on.doc") {
                 UIPasteboard.general.string = text
             }
         }
         if let onEdit {
-            Button("编辑", systemImage: "pencil", action: onEdit)
+            Button(L10n.Common.edit, systemImage: "pencil", action: onEdit)
         }
         if !text.isEmpty {
             ShareLink(item: text) {
-                Label("共享…", systemImage: "square.and.arrow.up")
+                Label(L10n.Entry.shareEllipsis, systemImage: "square.and.arrow.up")
             }
         }
     }
@@ -97,7 +102,7 @@ struct UserBubble: View {
         let icon = Text(Image(systemName: "cube"))
             .font(.system(size: 13, weight: .medium))
             .baselineOffset(1)
-            .accessibilityLabel("技能")
+            .accessibilityLabel(L10n.Entry.skill)
         // No-break spaces keep the chip on one line.
         let label = RemoteSkill.displayName(for: name).replacingOccurrences(of: " ", with: "\u{00A0}")
         return Text("\(icon)\u{00A0}\(Text(verbatim: label).fontWeight(.medium))")
@@ -108,6 +113,7 @@ struct UserBubble: View {
 // Replaces a sent prompt's bubble while it is edited, like the desktop: skills can be added with the
 // trigger menu, return inserts a newline, and send reruns the conversation from this prompt.
 struct UserMessageEditor: View {
+    @Environment(\.locale) private var locale
     @Binding var draft: ComposerDraft
     let skills: [RemoteSkill]
     let skillTrigger: SkillTrigger
@@ -119,6 +125,7 @@ struct UserMessageEditor: View {
     @State private var isFocused = true
 
     var body: some View {
+        let _ = locale
         let menuItems = isFocused
             ? ComposerMenu.items(for: draft, commands: [], skills: skills, trigger: skillTrigger)
             : []
@@ -130,15 +137,15 @@ struct UserMessageEditor: View {
             }
             .frame(minHeight: 60, alignment: .top)
             .allowsHitTesting(!isSubmitting)
-            .accessibilityLabel("编辑历史消息")
+            .accessibilityLabel(L10n.Entry.editMessageAccessibility)
 
             HStack(spacing: 8) {
-                Button("取消", action: onCancel)
+                Button(L10n.Common.cancel, action: onCancel)
                     .buttonStyle(.bordered)
                     .tint(.secondary)
                     .disabled(isSubmitting)
                 Button(action: onSubmit) {
-                    Text("发送")
+                    Text(L10n.Composer.send)
                         .opacity(isSubmitting ? 0 : 1)
                         .overlay {
                             if isSubmitting {
@@ -206,6 +213,7 @@ struct SentImage: Identifiable, Sendable {
 // Thumbnails of a prompt's images: one image as a large tile, several in rows of two. Tiles have fixed
 // sizes, so loading thumbnails never moves the conversation. Tapping a tile previews the images full screen.
 struct SentImageGallery: View {
+    @Environment(\.locale) private var locale
     let images: [SentImage]
     @State private var previewItems: [URL] = []
     @State private var previewItem: URL?
@@ -215,6 +223,7 @@ struct SentImageGallery: View {
     @State private var preparation: Task<Void, Never>?
 
     var body: some View {
+        let _ = locale
         let side: CGFloat = images.count == 1 ? 220 : 110
         let rows = stride(from: 0, to: images.count, by: 2).map { Array(images[$0 ..< min($0 + 2, images.count)]) }
         VStack(alignment: .trailing, spacing: 6) {
@@ -227,8 +236,8 @@ struct SentImageGallery: View {
                             SentImageTile(image: image, side: side)
                         }
                         .buttonStyle(.plain)
-                        .accessibilityLabel(images.count == 1 ? "图片" : "图片 \((images.firstIndex { $0.id == image.id } ?? 0) + 1)")
-                        .accessibilityHint("查看大图")
+                        .accessibilityLabel(images.count == 1 ? L10n.Entry.image : L10n.Entry.imageNumbered((images.firstIndex { $0.id == image.id } ?? 0) + 1))
+                        .accessibilityHint(L10n.Entry.viewFullImage)
                     }
                 }
             }
@@ -376,7 +385,7 @@ private enum SentImagePreviewFiles {
         let files: [(id: String, url: URL)] = images.enumerated().compactMap { index, image in
             guard let data = Data(base64Encoded: image.data, options: .ignoreUnknownCharacters) else { return nil }
             let fileExtension = UTType(mimeType: image.mimeType)?.preferredFilenameExtension ?? "png"
-            let url = directory.appendingPathComponent("图片 \(index + 1).\(fileExtension)")
+            let url = directory.appendingPathComponent("\(L10n.Entry.imageNumbered(index + 1)).\(fileExtension)")
             guard (try? data.write(to: url)) != nil else { return nil }
             return (image.id, url)
         }
@@ -391,18 +400,31 @@ private enum SentImagePreviewFiles {
 
 // Copy / fork actions with the message timestamp, like the desktop's assistant message actions.
 struct MessageActions: View {
+    @Environment(\.locale) private var locale
     let text: String
     let createdAt: Double
     var onFork: (() -> Void)? = nil
 
-    private static let formatter: DateFormatter = {
+    private static let zhFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "zh_CN")
         formatter.dateFormat = "M月d日 HH:mm"
         return formatter
     }()
 
+    private static let enFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US")
+        formatter.dateFormat = "MMM d, HH:mm"
+        return formatter
+    }()
+
+    private var activeFormatter: DateFormatter {
+        L10n.currentLanguage == .simplifiedChinese ? Self.zhFormatter : Self.enFormatter
+    }
+
     var body: some View {
+        let _ = locale
         HStack(spacing: 10) {
             actionButton("square.on.square") {
                 UIPasteboard.general.string = text
@@ -411,7 +433,7 @@ struct MessageActions: View {
                 actionButton("arrow.triangle.branch", rotation: 90, action: onFork)
             }
             if createdAt > 0 {
-                Text(Self.formatter.string(from: Date(timeIntervalSince1970: createdAt / 1000)))
+                Text(activeFormatter.string(from: Date(timeIntervalSince1970: createdAt / 1000)))
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                     .padding(.leading, 2)

@@ -568,8 +568,8 @@ final class NavigationLayoutTests: XCTestCase {
         let loadingSize = loadingHost.sizeThatFits(in: CGSize(width: 390, height: 600))
         XCTAssertGreaterThan(loadingSize.width, 120)
         XCTAssertGreaterThan(loadingSize.height, 80)
-        XCTAssertEqual(ConversationLoadingView.statusTitle(isConnected: false, desktopName: "Studio Mac"), "正在连接 Studio Mac…")
-        XCTAssertEqual(ConversationLoadingView.statusTitle(isConnected: true, desktopName: "Studio Mac"), "正在加载对话…")
+        XCTAssertEqual(ConversationLoadingView.statusTitle(isConnected: false, desktopName: "Studio Mac"), L10n.Thread.loadingConnectingTitle("Studio Mac"))
+        XCTAssertEqual(ConversationLoadingView.statusTitle(isConnected: true, desktopName: "Studio Mac"), L10n.Thread.loadingMessagesTitle)
 
         // Also verify a direct ThreadModel experiencing the exact same stale-socket drop holds the loading state
         // without flashing loadError or connectionError, and resolves the connecting composer placeholder.
@@ -600,8 +600,8 @@ final class NavigationLayoutTests: XCTestCase {
         XCTAssertTrue(probeModel.isLoading)
         XCTAssertNil(probeModel.loadError)
         XCTAssertNil(probeModel.connectionError)
-        XCTAssertEqual(ThreadView.resolvedComposerPlaceholder(model: probeModel), "正在连接 Studio Mac…")
-        XCTAssertEqual(ThreadView.resolvedTitle(model: probeModel, router: router), "对话")
+        XCTAssertEqual(ThreadView.resolvedComposerPlaceholder(model: probeModel), L10n.Home.clientConnecting("Studio Mac"))
+        XCTAssertEqual(ThreadView.resolvedTitle(model: probeModel, router: router), L10n.Thread.chatTitle)
 
         // Allow both servers to accept reconnects inside the grace window; both ThreadView and probeModel recover cleanly.
         server.rejectConnections = false
@@ -617,7 +617,7 @@ final class NavigationLayoutTests: XCTestCase {
         XCTAssertNil(probeModel.loadError)
         XCTAssertNil(probeModel.connectionError)
         XCTAssertEqual(probeModel.entries.last?.text, "部署脚本检查已完成，一切正常。")
-        XCTAssertEqual(ThreadView.resolvedComposerPlaceholder(model: probeModel), "在 Studio Mac 上工作")
+        XCTAssertEqual(ThreadView.resolvedComposerPlaceholder(model: probeModel), L10n.Thread.workOnDesktop("Studio Mac"))
     }
 
     func testGenuinelyUnreachableDesktopShowsErrorOnlyAfterGracePeriodAndSupportsManualRetry() async throws {
@@ -739,7 +739,7 @@ final class NavigationLayoutTests: XCTestCase {
         defer { model.deactivate() }
 
         try await waitUntil("terminal wrong-password error surfaces immediately", timeout: 1.5) {
-            model.connectionError == "密码错误" && !model.isWaitingForConnection && !model.isLoading
+            model.connectionError == L10n.ErrorMessage.unauthorized && !model.isWaitingForConnection && !model.isLoading
         }
         XCTAssertLessThan(ContinuousClock.now - start, .seconds(1.5))
     }

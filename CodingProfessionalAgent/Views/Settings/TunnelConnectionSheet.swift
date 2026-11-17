@@ -21,6 +21,7 @@ private struct SelectedTunnelServerTarget: Hashable {
 struct TunnelConnectionSheet: View {
     @Environment(ConnectionStore.self) private var store
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.locale) private var locale
 
     @State private var baseURL: String
     @State private var apiKey: String
@@ -38,6 +39,7 @@ struct TunnelConnectionSheet: View {
     }
 
     var body: some View {
+        let _ = locale
         NavigationStack(path: $navigationPath) {
             Form {
                 gatewaySection
@@ -50,7 +52,7 @@ struct TunnelConnectionSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") {
+                    Button(L10n.Common.cancel) {
                         dismiss()
                     }
                     .tint(Color.primary)
@@ -84,7 +86,7 @@ struct TunnelConnectionSheet: View {
 
     private var gatewaySection: some View {
         Section {
-            LabeledContent("URL 地址") {
+            LabeledContent(L10n.Tunnel.urlLabel) {
                 TextField("https://example.com:8317", text: $baseURL)
                     .multilineTextAlignment(.trailing)
                     .keyboardType(.URL)
@@ -93,7 +95,7 @@ struct TunnelConnectionSheet: View {
             }
 
             LabeledContent("API Key") {
-                SecureField("必填", text: $apiKey)
+                SecureField(L10n.Common.required, text: $apiKey)
                     .multilineTextAlignment(.trailing)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
@@ -113,7 +115,7 @@ struct TunnelConnectionSheet: View {
             }
             .disabled(!canConnect || isSearchingCurrentConfig)
         } header: {
-            Text("CLIProxyAPI 服务")
+            Text(L10n.Tunnel.serviceSection)
         } footer: {
             VStack(alignment: .leading, spacing: 6) {
                 if let validationMessage {
@@ -123,7 +125,7 @@ struct TunnelConnectionSheet: View {
                     Text(connectError)
                         .foregroundStyle(.red)
                 }
-                Text("请在桌面端「设置 → 连接」中配置相同的 CLIProxyAPI 地址与 API Key，并打开「开启CLIProxyAPI Tunnel」。")
+                Text(L10n.Tunnel.gatewayHint)
             }
         }
     }
@@ -133,7 +135,7 @@ struct TunnelConnectionSheet: View {
         let session = context.session
         Section {
             if !isConnectedToCurrentConfig {
-                Text("网关地址或 API Key 已变更，请点击上方「切换网关并搜索」获取对应服务器列表。")
+                Text(L10n.Tunnel.configChangedPrompt)
                     .font(.system(size: 15))
                     .foregroundStyle(.secondary)
                     .padding(.vertical, 4)
@@ -143,14 +145,14 @@ struct TunnelConnectionSheet: View {
                     HStack(spacing: 10) {
                         ProgressView()
                             .controlSize(.small)
-                        Text("正在注册客户端并搜索在线服务器…")
+                        Text(L10n.Tunnel.registering)
                             .foregroundStyle(.secondary)
                     }
                 case .reconnecting(let attempt):
                     HStack(spacing: 10) {
                         ProgressView()
                             .controlSize(.small)
-                        Text("连接中断，正在第 \(attempt) 次重连…")
+                        Text(L10n.Tunnel.reconnectingAttempt(attempt))
                             .foregroundStyle(.secondary)
                     }
                 case .failed(let message):
@@ -162,7 +164,7 @@ struct TunnelConnectionSheet: View {
                                 .font(.system(size: 15))
                                 .foregroundStyle(.red)
                         }
-                        Button("重试连接") {
+                        Button(L10n.Tunnel.retryConnect) {
                             session.retryNow()
                         }
                         .font(.system(size: 15, weight: .medium))
@@ -173,11 +175,11 @@ struct TunnelConnectionSheet: View {
                         HStack(spacing: 10) {
                             ProgressView()
                                 .controlSize(.small)
-                            Text("正在同步在线服务器列表…")
+                            Text(L10n.Tunnel.syncingServers)
                                 .foregroundStyle(.secondary)
                         }
                     } else if session.servers.isEmpty {
-                        Text("当前 API Key 下暂无在线的远程服务器。请确认电脑端已开启 CLIProxyAPI Tunnel。")
+                        Text(L10n.Tunnel.noOnlineServers)
                             .font(.system(size: 15))
                             .foregroundStyle(.secondary)
                             .padding(.vertical, 4)
@@ -190,7 +192,7 @@ struct TunnelConnectionSheet: View {
             }
         } header: {
             HStack {
-                Text("在线远程服务器")
+                Text(L10n.Tunnel.onlineServersSection)
                 Spacer()
                 if isConnectedToCurrentConfig, session.phase == .connected {
                     Button {
@@ -198,7 +200,7 @@ struct TunnelConnectionSheet: View {
                     } label: {
                         HStack(spacing: 4) {
                             Image(systemName: "arrow.clockwise")
-                            Text("刷新")
+                            Text(L10n.Common.refresh)
                         }
                         .font(.system(size: 14))
                     }
@@ -225,7 +227,7 @@ struct TunnelConnectionSheet: View {
                         .lineLimit(1)
                 }
                 Spacer()
-                Text("已添加")
+                Text(L10n.Tunnel.added)
                     .font(.system(size: 14))
                     .foregroundStyle(.secondary)
             }
@@ -297,12 +299,12 @@ struct TunnelConnectionSheet: View {
 
     private var connectButtonTitle: String {
         if isSearchingCurrentConfig {
-            return "正在连接…"
+            return L10n.Connection.statusConnecting
         }
         if isConnectedToCurrentConfig {
-            return "重新搜索服务器"
+            return L10n.Tunnel.searchAgain
         }
-        return connectedContext == nil ? "连接并搜索服务器" : "切换网关并搜索"
+        return connectedContext == nil ? L10n.Tunnel.connectAndSearch : L10n.Tunnel.switchGatewayAndSearch
     }
 
     private var validationMessage: String? {
@@ -382,6 +384,7 @@ struct TunnelConnectionSheet: View {
 
 // Second step: configures display name, icon, and optional desktop Web password for a discovered server.
 private struct TunnelServerDetailView: View {
+    @Environment(\.locale) private var locale
     let server: DiscoveredTunnelServer
     let endpoint: TunnelEndpoint
     let apiKey: String
@@ -405,30 +408,31 @@ private struct TunnelServerDetailView: View {
     }
 
     var body: some View {
+        let _ = locale
         Form {
             Section {
                 HStack {
-                    Text("图标")
+                    Text(L10n.Connection.icon)
                     Spacer()
                     iconPicker
                 }
 
-                LabeledContent("显示名称") {
+                LabeledContent(L10n.Connection.displayName) {
                     TextField(server.name, text: $name)
                         .multilineTextAlignment(.trailing)
                 }
 
-                LabeledContent("密码") {
-                    SecureField("未设置可留空", text: $password)
+                LabeledContent(L10n.Connection.password) {
+                    SecureField(L10n.Connection.passwordPlaceholder, text: $password)
                         .multilineTextAlignment(.trailing)
                         .textInputAutocapitalization(.never)
                 }
             } footer: {
-                Text("若远程桌面端在「设置 → 连接 → Web 服务器」中设置了访问密码，请在此填写；未设置则留空即可。")
+                Text(L10n.Tunnel.detailPasswordHint)
             }
 
-            Section("隧道信息") {
-                LabeledContent("远程服务器") {
+            Section(L10n.Tunnel.infoSection) {
+                LabeledContent(L10n.Connection.remoteServer) {
                     Text(server.name)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -442,11 +446,11 @@ private struct TunnelServerDetailView: View {
             }
         }
         .font(.system(size: 17))
-        .navigationTitle("添加远程服务器")
+        .navigationTitle(L10n.Tunnel.addRemoteServerTitle)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {
-                Button("保存") {
+                Button(L10n.Common.save) {
                     let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
                     let connection = DesktopConnection.tunnel(
                         name: trimmedName,

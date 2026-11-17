@@ -115,9 +115,31 @@ final class TunnelSession: Identifiable {
         let clientUUID: String
     }
 
+    private enum TerminalFailureReason {
+        case apiKeyRevoked
+        case apiKeyInvalidOrUnauthorized
+        case invalidHandshake
+        case custom(String)
+
+        var localizedMessage: String {
+            switch self {
+            case .apiKeyRevoked:
+                L10n.ErrorMessage.tunnelAPIKeyRevoked
+            case .apiKeyInvalidOrUnauthorized:
+                L10n.ErrorMessage.tunnelAPIKeyInvalidOrUnauthorized
+            case .invalidHandshake:
+                L10n.ErrorMessage.tunnelInvalidHandshake
+            case .custom(let message):
+                message
+            }
+        }
+    }
+
     @ObservationIgnored private var pendingWSOpen: [String: (serverUUID: String, stream: TunnelWebSocketStream, continuation: CheckedContinuation<TunnelWebSocketStream, Error>)] = [:]
     @ObservationIgnored private var activeWSStreams: [String: TunnelWebSocketStream] = [:]
     @ObservationIgnored private var staleStreamsPendingCleanup: Set<StaleRemoteStream> = []
+    @ObservationIgnored private var terminalFailureReason: TerminalFailureReason?
+    @ObservationIgnored nonisolated(unsafe) private var languageObserver: NSObjectProtocol?
 
     fileprivate init(
         endpoint: TunnelEndpoint,
@@ -137,9 +159,26 @@ final class TunnelSession: Identifiable {
         self.initialBackoff = initialBackoff
         self.conflictBackoff = conflictBackoff
         self.maxBackoff = maxBackoff
+        languageObserver = NotificationCenter.default.addObserver(
+            forName: LocalizationManager.languageDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, case .failed = self.phase, let reason = self.terminalFailureReason else { return }
+                self.phase = .failed(reason.localizedMessage)
+                self.notifyObservers()
+            }
+        }
         Task { @MainActor [weak self] in
             guard let self, !self.isDisposed, self.epoch == 0 else { return }
             self.dial()
+        }
+    }
+
+    deinit {
+        if let languageObserver {
+            NotificationCenter.default.removeObserver(languageObserver)
         }
     }
 
@@ -220,7 +259,7 @@ final class TunnelSession: Identifiable {
         }
         try await waitUntilReady(timeout: initialBudget, label: path)
         guard isServerOnline(serverUUID) else {
-            throw DesktopClientError.remote("远程桌面端不在线")
+            throw DesktopClientError.tunnelServerOffline
         }
         guard let socket, phase == .connected else {
             throw DesktopClientError.notConnected
@@ -271,7 +310,7 @@ final class TunnelSession: Identifiable {
         }
         try await waitUntilReady(timeout: initialBudget, label: "ws_open")
         guard isServerOnline(serverUUID) else {
-            throw DesktopClientError.remote("远程桌面端不在线")
+            throw DesktopClientError.tunnelServerOffline
         }
         guard let socket, phase == .connected else {
             throw DesktopClientError.notConnected
@@ -439,6 +478,7 @@ final class TunnelSession: Identifiable {
         hasReceivedInitialServerList = false
         onlineMap.removeAll()
         servers = []
+        terminalFailureReason = nil
         phase = retryAttempt > 0 ? .reconnecting(retryAttempt) : .connecting
         notifyObservers()
 
@@ -450,7 +490,7 @@ final class TunnelSession: Identifiable {
         do {
             url = try endpoint.handshakeURL(clientUUID: clientUUID, clientName: clientName)
         } catch {
-            enterTerminalFailure(error.localizedDescription)
+            enterTerminalFailure(.custom(error.localizedDescription))
             return
         }
 
@@ -495,7 +535,7 @@ final class TunnelSession: Identifiable {
     fileprivate func handleDelegateClose(task: URLSessionWebSocketTask, epoch expectedEpoch: Int, code: Int, reason: String) {
         guard !isDisposed, epoch == expectedEpoch else { return }
         if code == 1008, reason.localizedCaseInsensitiveContains("api key revoked") {
-            enterTerminalFailure("CLIProxyAPI API Key 已被吊销")
+            enterTerminalFailure(.apiKeyRevoked)
         }
     }
 
@@ -515,17 +555,17 @@ final class TunnelSession: Identifiable {
         failAllInFlight(DesktopClientError.notConnected)
 
         if wsCloseCode == 1008, wsCloseReason.localizedCaseInsensitiveContains("api key revoked") {
-            enterTerminalFailure("CLIProxyAPI API Key 已被吊销")
+            enterTerminalFailure(.apiKeyRevoked)
             return
         }
 
         if let httpStatus {
             switch httpStatus {
             case 401, 403:
-                enterTerminalFailure("CLIProxyAPI API Key 无效或未授权")
+                enterTerminalFailure(.apiKeyInvalidOrUnauthorized)
                 return
             case 400:
-                enterTerminalFailure("隧道握手参数无效（400）")
+                enterTerminalFailure(.invalidHandshake)
                 return
             case 409:
                 consecutive409Count += 1
@@ -533,7 +573,7 @@ final class TunnelSession: Identifiable {
                     rotateClientUUID()
                     consecutive409Count = 0
                 }
-                scheduleReconnect(baseDelay: conflictBackoff, reason: "设备标识冲突，正在重试…")
+                scheduleReconnect(baseDelay: conflictBackoff, reason: L10n.ErrorMessage.tunnelConflictRetrying)
                 return
             default:
                 break
@@ -547,10 +587,11 @@ final class TunnelSession: Identifiable {
         scheduleReconnect(baseDelay: initialBackoff, reason: cleanReason)
     }
 
-    private func enterTerminalFailure(_ rawMessage: String) {
+    private func enterTerminalFailure(_ reason: TerminalFailureReason) {
         reconnectTask?.cancel()
         reconnectTask = nil
-        let message = TunnelProtocol.redactSecret(rawMessage, secret: apiKey)
+        terminalFailureReason = reason
+        let message = TunnelProtocol.redactSecret(reason.localizedMessage, secret: apiKey)
         if socket != nil {
             tearDownSocket(closeCode: .goingAway, error: DesktopClientError.remote(message))
         } else {
@@ -601,7 +642,7 @@ final class TunnelSession: Identifiable {
             phase = .connected
             flushStaleRemoteStreamCloses()
             for uuid in removedUUIDs {
-                failInFlightForServer(uuid, message: "远程桌面端已离线")
+                failInFlightForServer(uuid, error: DesktopClientError.tunnelServerDisconnected)
             }
             resumeReadinessWaiters()
             notifyObservers()
@@ -614,7 +655,7 @@ final class TunnelSession: Identifiable {
         case .serverOffline(let server):
             onlineMap.removeValue(forKey: server.uuid)
             rebuildSortedServers()
-            failInFlightForServer(server.uuid, message: "远程桌面端已离线")
+            failInFlightForServer(server.uuid, error: DesktopClientError.tunnelServerDisconnected)
             notifyObservers()
 
         case .error(let code, let targetUUID, let message):
@@ -625,7 +666,7 @@ final class TunnelSession: Identifiable {
                     rebuildSortedServers()
                     failInFlightForServer(
                         targetUUID,
-                        message: code == "target_not_found" ? "远程桌面端不在线" : clean,
+                        error: code == "target_not_found" ? DesktopClientError.tunnelServerOffline : DesktopClientError.remote(clean),
                         sendRemoteClose: false
                     )
                     notifyObservers()
@@ -634,7 +675,7 @@ final class TunnelSession: Identifiable {
                     // was dropped by the gateway, so terminate all in-flight HTTP & virtual WS streams
                     // for that server immediately (preventing hung RPCs) while sending ws_close AND
                     // queueing a retry close before the next ws_open in case congestion drops ws_close too.
-                    failInFlightForServer(targetUUID, message: clean, sendRemoteClose: true)
+                    failInFlightForServer(targetUUID, error: DesktopClientError.remote(clean), sendRemoteClose: true)
                 }
             }
         }
@@ -665,7 +706,7 @@ final class TunnelSession: Identifiable {
                     if let status {
                         pending.continuation.resume(throwing: DesktopClientError.http(status))
                     } else {
-                        let clean = TunnelProtocol.redactSecret(error ?? "WebSocket 连接被拒绝", secret: apiKey)
+                        let clean = TunnelProtocol.redactSecret(error ?? L10n.ErrorMessage.tunnelWSRejected, secret: apiKey)
                         pending.continuation.resume(throwing: DesktopClientError.remote(clean))
                     }
                 }
@@ -720,8 +761,7 @@ final class TunnelSession: Identifiable {
         pendingWSOpen.removeValue(forKey: connId)?.continuation.resume(with: result)
     }
 
-    private func failInFlightForServer(_ serverUUID: String, message: String, sendRemoteClose: Bool = false) {
-        let error = DesktopClientError.remote(message)
+    private func failInFlightForServer(_ serverUUID: String, error: Error, sendRemoteClose: Bool = false) {
         let matchingHTTP = pendingHTTP.filter { $0.value.serverUUID == serverUUID }.map(\.key)
         for id in matchingHTTP {
             resolveHTTP(id, .failure(error))

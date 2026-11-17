@@ -26,6 +26,7 @@ struct TurnContext {
 // One assistant turn in the desktop's folded style: an elapsed-time header followed by the activity
 // while running; once finished, everything except the final reply folds into the header.
 struct AssistantTurnView: View {
+    @Environment(\.locale) private var locale
     let turn: AssistantTurn
     let context: TurnContext
     let wrapLines: Bool
@@ -39,6 +40,7 @@ struct AssistantTurnView: View {
     }
 
     var body: some View {
+        let _ = locale
         let completedAt = turn.completedAt
         let status = turn.status
         let reply = turn.trailingText
@@ -59,7 +61,7 @@ struct AssistantTurnView: View {
             }
 
             if status == .error {
-                Label(turn.errorMessage ?? "生成失败", systemImage: "exclamationmark.triangle")
+                Label(turn.errorMessage ?? L10n.Turn.generationFailed, systemImage: "exclamationmark.triangle")
                     .font(.system(size: 15))
                     .foregroundStyle(.red)
             }
@@ -131,14 +133,16 @@ struct AssistantTurnView: View {
     }
 }
 
-// "已处理 29s" ticking while running; afterwards "已完成 4m 26s", which toggles the folded activity.
+// "Processed 29s" ticking while running; afterwards "Completed 4m 26s", which toggles the folded activity.
 private struct TurnHeader: View {
+    @Environment(\.locale) private var locale
     let turn: AssistantTurn
     let completedAt: Double?
     let isExpanded: Bool
     let onToggle: () -> Void
 
     var body: some View {
+        let _ = locale
         VStack(alignment: .leading, spacing: 8) {
             if turn.isLive {
                 TimelineView(.periodic(from: .now, by: 1)) { context in
@@ -149,7 +153,7 @@ private struct TurnHeader: View {
                     title(turn.headerTitle(now: 0, completedAt: completedAt))
                 }
                 .buttonStyle(.plain)
-                .accessibilityHint(isExpanded ? "收起工具记录" : "展开工具记录")
+                .accessibilityHint(isExpanded ? L10n.Turn.collapseHistory : L10n.Turn.expandHistory)
             }
             Rectangle()
                 .fill(Color(.separator))
@@ -170,6 +174,7 @@ private struct TurnHeader: View {
 // Consecutive tool calls folded into one line showing the latest call. With several calls the line
 // expands into the list of calls; tapping a call shows its arguments and result.
 private struct ToolActivityStack: View {
+    @Environment(\.locale) private var locale
     let items: [ToolCallItem]
     // The turn is still working on this run of tools.
     let isActive: Bool
@@ -178,6 +183,7 @@ private struct ToolActivityStack: View {
     @State private var detailId: String?
 
     var body: some View {
+        let _ = locale
         if let latest = items.last {
             let summary = latest.summary
             let isStackActive = isActive || items.contains(where: \.isRunning)
@@ -191,7 +197,7 @@ private struct ToolActivityStack: View {
                         ToolActivityLine(summary: summary, isShimmering: isStackActive, chevron: isHistoryOpen ? "chevron.down" : "chevron.right")
                     }
                     .buttonStyle(.plain)
-                    .accessibilityHint(isHistoryOpen ? "收起工具记录" : "展开工具记录")
+                    .accessibilityHint(isHistoryOpen ? L10n.Turn.collapseHistory : L10n.Turn.expandHistory)
 
                     if isHistoryOpen {
                         history(isStackActive: isStackActive)
@@ -229,11 +235,11 @@ private struct ToolActivityStack: View {
             ToolActivityLine(summary: summary, isShimmering: isShimmering, chevron: nil)
         }
         .buttonStyle(.plain)
-        .accessibilityHint(detailId == item.id ? "收起详情" : "展开详情")
+        .accessibilityHint(detailId == item.id ? L10n.Turn.collapseDetails : L10n.Turn.expandDetails)
 
         if detailId == item.id {
             if item.result?.isError == true {
-                Label("错误", systemImage: "xmark.circle")
+                Label(L10n.Common.error, systemImage: "xmark.circle")
                     .font(.system(size: 13))
                     .foregroundStyle(.red)
             }

@@ -4,6 +4,7 @@ import SwiftUI
 struct ConnectionEditorSheet: View {
     @Environment(ConnectionStore.self) private var store
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.locale) private var locale
     private let original: DesktopConnection?
     @State private var icon: ConnectionIcon
     @State private var name: String
@@ -36,6 +37,7 @@ struct ConnectionEditorSheet: View {
     }
 
     var body: some View {
+        let _ = locale
         NavigationStack {
             Form {
                 if isTunnelMode {
@@ -46,7 +48,7 @@ struct ConnectionEditorSheet: View {
 
                 if let original {
                     Section {
-                        Button("删除连接", role: .destructive) {
+                        Button(L10n.Connection.delete, role: .destructive) {
                             store.remove(original.id)
                             dismiss()
                         }
@@ -55,17 +57,17 @@ struct ConnectionEditorSheet: View {
                 }
             }
             .font(.system(size: 17))
-            .navigationTitle(original == nil ? "添加桌面端" : "编辑桌面端")
+            .navigationTitle(original == nil ? L10n.Connection.addTitle : L10n.Connection.editTitle)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") {
+                    Button(L10n.Common.cancel) {
                         dismiss()
                     }
                     .tint(Color.primary)
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("保存") {
+                    Button(L10n.Common.save) {
                         save()
                     }
                     .disabled(!canSave)
@@ -78,17 +80,17 @@ struct ConnectionEditorSheet: View {
     private var directSection: some View {
         Section {
             HStack {
-                Text("图标")
+                Text(L10n.Connection.icon)
                 Spacer()
                 iconPicker
             }
 
-            LabeledContent("显示名称") {
-                TextField("选填", text: $name)
+            LabeledContent(L10n.Connection.displayName) {
+                TextField(L10n.Common.optional, text: $name)
                     .multilineTextAlignment(.trailing)
             }
 
-            LabeledContent("主机") {
+            LabeledContent(L10n.Connection.host) {
                 TextField("192.168.1.10", text: $host)
                     .multilineTextAlignment(.trailing)
                     .keyboardType(.URL)
@@ -96,14 +98,14 @@ struct ConnectionEditorSheet: View {
                     .autocorrectionDisabled()
             }
 
-            LabeledContent("端口") {
+            LabeledContent(L10n.Connection.port) {
                 TextField("18080", text: $port)
                     .multilineTextAlignment(.trailing)
                     .keyboardType(.numberPad)
             }
 
-            LabeledContent("密码") {
-                SecureField("未设置可留空", text: $password)
+            LabeledContent(L10n.Connection.password) {
+                SecureField(L10n.Connection.passwordPlaceholder, text: $password)
                     .multilineTextAlignment(.trailing)
                     .textInputAutocapitalization(.never)
             }
@@ -113,7 +115,7 @@ struct ConnectionEditorSheet: View {
                     Text(error)
                         .foregroundStyle(.red)
                 }
-                Text("请先在桌面端「设置 → 连接 → Web 服务器」中启用 Web 服务，并将绑定 IP 设为 0.0.0.0（允许局域网访问），然后在此填写电脑的 IP、服务端口与 Web 访问密码。")
+                Text(L10n.Connection.directHint)
             }
         }
     }
@@ -121,12 +123,12 @@ struct ConnectionEditorSheet: View {
     private var tunnelSection: some View {
         Section {
             HStack {
-                Text("图标")
+                Text(L10n.Connection.icon)
                 Spacer()
                 iconPicker
             }
 
-            LabeledContent("显示名称") {
+            LabeledContent(L10n.Connection.displayName) {
                 TextField(tunnelServerDisplayLabel, text: $name)
                     .multilineTextAlignment(.trailing)
             }
@@ -140,20 +142,20 @@ struct ConnectionEditorSheet: View {
             }
 
             LabeledContent("API Key") {
-                SecureField("必填", text: $tunnelAPIKey)
+                SecureField(L10n.Common.required, text: $tunnelAPIKey)
                     .multilineTextAlignment(.trailing)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
             }
 
-            LabeledContent("远程服务器") {
+            LabeledContent(L10n.Connection.remoteServer) {
                 Text(tunnelServerDisplayLabel)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
 
-            LabeledContent("密码") {
-                SecureField("未设置可留空", text: $password)
+            LabeledContent(L10n.Connection.password) {
+                SecureField(L10n.Connection.passwordPlaceholder, text: $password)
                     .multilineTextAlignment(.trailing)
                     .textInputAutocapitalization(.never)
             }
@@ -163,13 +165,13 @@ struct ConnectionEditorSheet: View {
                     Text(error)
                         .foregroundStyle(.red)
                 }
-                Text("通过 CLIProxyAPI Tunnel 连接远程桌面端；密码对应远程桌面端的 Web 访问密码（未设置可留空）。")
+                Text(L10n.Connection.tunnelHint)
             }
         }
     }
 
     private var tunnelServerDisplayLabel: String {
-        guard let original else { return "选填" }
+        guard let original else { return L10n.Common.optional }
         let trimmed = original.tunnelServerName.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? original.tunnelServerUUID : trimmed
     }
@@ -206,7 +208,7 @@ struct ConnectionEditorSheet: View {
             // The desktop Web server only speaks plain HTTP / WebSocket.
             let scheme = trimmed[..<separator.lowerBound].lowercased()
             guard scheme == "http" || scheme == "ws" else {
-                return ParsedAddress(error: "暂不支持 \(scheme) 加密连接，请填写 IP 或 http 地址。")
+                return ParsedAddress(error: L10n.Connection.unsupportedEncryptedScheme(scheme))
             }
         }
         // Bare IPv6 literals cannot be parsed as URLs; keep them as typed.
@@ -215,7 +217,7 @@ struct ConnectionEditorSheet: View {
         }
         let candidate = trimmed.contains("://") ? trimmed : "http://" + trimmed
         guard let components = URLComponents(string: candidate), let parsedHost = components.host, !parsedHost.isEmpty else {
-            return ParsedAddress(error: "主机地址无效。")
+            return ParsedAddress(error: L10n.Connection.invalidHost)
         }
         let bareHost = parsedHost.trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
         return ParsedAddress(host: bareHost, port: components.port)

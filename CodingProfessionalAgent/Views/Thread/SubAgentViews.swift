@@ -2,10 +2,12 @@ import SwiftUI
 
 // Badges of the sub-agents launched in a turn; tapping one opens its own run view.
 struct SubAgentPills: View {
+    @Environment(\.locale) private var locale
     let pills: [SubAgentPill]
     let onOpen: (SubAgentRecord) -> Void
 
     var body: some View {
+        let _ = locale
         if !pills.isEmpty {
             FlowLayout(spacing: 8) {
                 ForEach(pills) { pill in
@@ -17,8 +19,8 @@ struct SubAgentPills: View {
                         label(pill)
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel(pill.isQueued ? "\(pill.name)，排队中" : pill.name)
-                    .accessibilityHint(pill.record == nil ? "" : "打开子智能体")
+                    .accessibilityLabel(pill.isQueued ? L10n.SubAgent.pillQueuedLabel(pill.name) : pill.name)
+                    .accessibilityHint(pill.record == nil ? "" : L10n.SubAgent.openHint)
                 }
             }
         }
@@ -35,7 +37,7 @@ struct SubAgentPills: View {
                     .modifier(Shimmer(isActive: pill.isRunning))
             }
             if pill.isQueued {
-                Text("（排队中）")
+                Text(L10n.SubAgent.queuedSuffix)
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
             }
@@ -156,21 +158,23 @@ struct FlowLayout: Layout {
 // Read-only run view of one sub-agent (desktop `SubAgentConversation`).
 struct SubAgentView: View {
     @Environment(ConnectionStore.self) private var store
+    @Environment(\.locale) private var locale
     let connectionId: UUID
     let parentSessionId: String
     let agentId: String
     let sessionId: String
 
     var body: some View {
+        let _ = locale
         if let client = store.client(for: connectionId) {
             // Key by full sub-agent path so replacing the navigation stack never reuses stale state.
             SubAgentContent(client: client, parentSessionId: parentSessionId, agentId: agentId, sessionId: sessionId)
                 .id("\(client.id.uuidString)/\(parentSessionId)/\(agentId)/\(sessionId)")
         } else {
             ContentUnavailableView(
-                "连接不可用",
+                L10n.Thread.connectionUnavailableTitle,
                 systemImage: "bolt.horizontal.circle",
-                description: Text("该桌面端连接已被删除。")
+                description: Text(L10n.Thread.connectionUnavailableMessage)
             )
         }
     }
@@ -179,6 +183,7 @@ struct SubAgentView: View {
 private struct SubAgentContent: View {
     @Environment(Router.self) private var router
     @Environment(\.navigationWidth) private var navigationWidth
+    @Environment(\.locale) private var locale
     @State private var model: ThreadModel
     // Error of the latest message fork, shown in an alert.
     @State private var forkError: String?
@@ -228,6 +233,7 @@ private struct SubAgentContent: View {
     }
 
     var body: some View {
+        let _ = locale
         // Stable container so recreating the scroll view when the first entries arrive does not
         // re-register the toolbar item in UINavigationBar and blink the header.
         ZStack {
@@ -272,8 +278,8 @@ private struct SubAgentContent: View {
             }
             .sharedBackgroundVisibility(.hidden)
         }
-        .alert("操作失败", isPresented: Binding(get: { forkError != nil }, set: { if !$0 { forkError = nil } })) {
-            Button("好", role: .cancel) {}
+        .alert(L10n.Common.actionFailed, isPresented: Binding(get: { forkError != nil }, set: { if !$0 { forkError = nil } })) {
+            Button(L10n.Common.ok, role: .cancel) {}
         } message: {
             Text(forkError ?? "")
         }
@@ -293,7 +299,7 @@ private struct SubAgentContent: View {
         HStack(spacing: 8) {
             SubAgentAvatar(icon: record?.icon, color: record?.color, size: 28)
             VStack(alignment: .leading, spacing: 2) {
-                Text(record?.name ?? "子智能体")
+                Text(record?.name ?? L10n.SubAgent.title)
                     .font(.system(size: 17, weight: .semibold))
                 TimelineView(.periodic(from: .now, by: 1)) { context in
                     subtitle(now: context.date.milliseconds)
@@ -323,7 +329,7 @@ private struct SubAgentContent: View {
             if isFast {
                 Image(systemName: "bolt.fill")
                     .foregroundStyle(Theme.skillChip)
-                    .accessibilityLabel("快速")
+                    .accessibilityLabel(L10n.SubAgent.fast)
             }
         }
         .font(.system(size: 13))
@@ -336,17 +342,17 @@ private struct SubAgentContent: View {
             if let error = model.connectionError {
                 ThreadStatusPlaceholder(
                     systemImage: "bolt.horizontal.circle",
-                    title: "无法连接到桌面端",
+                    title: L10n.Thread.cannotConnectTitle,
                     message: ThreadStatusPlaceholder.connectionMessage(error, desktopName: client.connection.displayName),
-                    actionTitle: client.connection.isEnabled ? "重试" : nil,
+                    actionTitle: client.connection.isEnabled ? L10n.Common.retry : nil,
                     action: { model.retryConnection() }
                 )
             } else if let error = model.loadError {
                 ThreadStatusPlaceholder(
                     systemImage: "exclamationmark.triangle",
-                    title: "加载失败",
+                    title: L10n.Thread.loadFailedTitle,
                     message: error,
-                    actionTitle: "重试",
+                    actionTitle: L10n.Common.retry,
                     action: { model.refresh() }
                 )
             } else if model.isWaitingForConnection || model.isLoading {
@@ -356,7 +362,7 @@ private struct SubAgentContent: View {
                     isConnected: client.isConnected
                 )
             } else if !model.isRunning {
-                Text("暂无消息")
+                Text(L10n.SubAgent.noMessages)
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
             }

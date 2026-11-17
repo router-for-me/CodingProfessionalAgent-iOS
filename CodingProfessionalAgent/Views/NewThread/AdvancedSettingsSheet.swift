@@ -2,6 +2,7 @@ import SwiftUI
 
 // Half-height sheet for choosing model, reasoning level and speed.
 struct AdvancedSettingsSheet: View {
+    @Environment(\.locale) private var locale
     let models: [RemoteModel]
     @Binding var modelId: String
     let reasoningChoices: [ReasoningChoice]
@@ -12,23 +13,24 @@ struct AdvancedSettingsSheet: View {
     var isRunActive = false
 
     private var modelName: String {
-        models.first { $0.id == modelId }?.label ?? "默认"
+        models.first { $0.id == modelId }?.label ?? L10n.Common.default
     }
 
     private var reasoningTitle: String {
-        reasoningChoices.first { $0.id == reasoning }?.title ?? "默认"
+        reasoningChoices.first { $0.id == reasoning }?.title ?? L10n.Common.default
     }
 
     var body: some View {
+        let _ = locale
         VStack(spacing: 0) {
-            Text("高级")
+            Text(L10n.Advanced.title)
                 .font(.system(size: 17, weight: .semibold))
                 .frame(height: 44)
                 .padding(.top, 20)
                 .padding(.bottom, 10)
 
             VStack(spacing: 0) {
-                SettingMenuRow(title: "模型", value: modelName, valueColor: .secondary) {
+                SettingMenuRow(title: L10n.Advanced.model, value: modelName, valueColor: .secondary) {
                     Picker(selection: $modelId) {
                         ForEach(models) { item in
                             Text(item.label).tag(item.id)
@@ -44,7 +46,7 @@ struct AdvancedSettingsSheet: View {
                 Divider()
                     .padding(.horizontal, 20)
 
-                SettingMenuRow(title: "智能", value: reasoningTitle) {
+                SettingMenuRow(title: L10n.Advanced.reasoning, value: reasoningTitle) {
                     Picker(selection: $reasoning) {
                         ForEach(reasoningChoices) { item in
                             Text(item.title).tag(item.id)
@@ -59,7 +61,7 @@ struct AdvancedSettingsSheet: View {
             .background(Theme.groupedRow, in: RoundedRectangle(cornerRadius: 26, style: .continuous))
 
             if isRunActive {
-                Text("会话运行中，仅可调整智能")
+                Text(L10n.Advanced.activeRunHint)
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -69,7 +71,7 @@ struct AdvancedSettingsSheet: View {
 
             // Like the desktop, models with only the standard speed hide the speed row.
             if supportsFast {
-                SettingMenuRow(title: "速度", value: speed.title) {
+                SettingMenuRow(title: L10n.Advanced.speed, value: speed.title) {
                     Picker(selection: $speed) {
                         ForEach(SpeedMode.allCases) { item in
                             Text(item.title).tag(item)

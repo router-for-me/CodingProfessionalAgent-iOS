@@ -33,7 +33,9 @@ struct ComposerAttachments: Equatable, Sendable {
     var processingCount = 0
 
     // Desktop `composer.imageUnsupportedModel`.
-    static let unsupportedImagesMessage = "当前模型不支持图片；请移除附件或切换模型后再发送"
+    static var unsupportedImagesMessage: String {
+        L10n.Attachments.unsupportedImagesModel
+    }
 
     var isEmpty: Bool {
         items.isEmpty
@@ -92,10 +94,10 @@ enum AttachmentReader {
 
         var errorDescription: String? {
             switch self {
-            case .imageTooLarge(let name): "图片过大（最大 25MB）：\(name)"
-            case .tooLarge(let name): "文件过大（最大 25MB）：\(name)"
-            case .unsupportedImage(let name): "不支持的图片类型：\(name)"
-            case .unreadable(let name): "无法读取文件：\(name)"
+            case .imageTooLarge(let name): L10n.Attachments.imageTooLarge(name)
+            case .tooLarge(let name): L10n.Attachments.fileTooLarge(name)
+            case .unsupportedImage(let name): L10n.Attachments.unsupportedImage(name)
+            case .unreadable(let name): L10n.Attachments.unreadable(name)
             }
         }
     }
@@ -239,9 +241,9 @@ private enum AttachmentSource: CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .camera: "相机"
-        case .photos: "照片"
-        case .files: "文件"
+        case .camera: L10n.Attachments.camera
+        case .photos: L10n.Attachments.photos
+        case .files: L10n.Attachments.files
         }
     }
 
@@ -295,7 +297,7 @@ private struct ComposerAttachmentPicker: ViewModifier {
                     for item in items {
                         do {
                             guard let data = try await item.loadTransferable(type: Data.self) else {
-                                throw AttachmentReader.Failure.unreadable("照片")
+                                throw AttachmentReader.Failure.unreadable(L10n.Attachments.photoFallbackName)
                             }
                             results.append(.success(try AttachmentReader.image(data: data, name: "image")))
                         } catch {
@@ -313,8 +315,8 @@ private struct ComposerAttachmentPicker: ViewModifier {
                     errorMessage = error.localizedDescription
                 }
             }
-            .alert("无法添加附件", isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) {
-                Button("好", role: .cancel) {}
+            .alert(L10n.Attachments.addErrorTitle, isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) {
+                Button(L10n.Common.ok, role: .cancel) {}
             } message: {
                 Text(errorMessage ?? "")
             }
@@ -325,12 +327,12 @@ private struct ComposerAttachmentPicker: ViewModifier {
         switch source {
         case .camera:
             guard UIImagePickerController.isSourceTypeAvailable(.camera) else {
-                errorMessage = "此设备无法使用相机"
+                errorMessage = L10n.Attachments.cameraUnavailable
                 return
             }
             let status = AVCaptureDevice.authorizationStatus(for: .video)
             guard status != .denied, status != .restricted else {
-                errorMessage = "请在“设置”中允许 CPA 访问相机"
+                errorMessage = L10n.Attachments.cameraPermissionDenied
                 return
             }
             showsCamera = true
@@ -533,7 +535,7 @@ private struct ImageAttachmentTile: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("移除图片")
+                .accessibilityLabel(L10n.Attachments.removeImage)
             }
     }
 }
@@ -564,7 +566,7 @@ private struct FileAttachmentChip: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("移除 \(attachment.name)")
+            .accessibilityLabel(L10n.Attachments.removeNamed(attachment.name))
         }
         .padding(.leading, 6)
         .padding(.trailing, 4)

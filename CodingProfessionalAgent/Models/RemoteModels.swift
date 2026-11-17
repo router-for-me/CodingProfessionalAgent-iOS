@@ -397,11 +397,11 @@ struct SubAgentRecord: Decodable, Identifiable, Hashable, Sendable {
 
     var statusTitle: String {
         switch status {
-        case "queued": "排队中"
-        case "running": "运行中"
-        case "completed": "已完成"
-        case "error": "出错"
-        case "aborted": "已停止"
+        case "queued": L10n.SubAgent.statusQueued
+        case "running": L10n.SubAgent.statusRunning
+        case "completed": L10n.SubAgent.statusCompleted
+        case "error": L10n.SubAgent.statusError
+        case "aborted": L10n.SubAgent.statusAborted
         default: status
         }
     }

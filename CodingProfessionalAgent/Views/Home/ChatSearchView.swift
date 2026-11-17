@@ -7,6 +7,7 @@ struct ChatSearchView: View {
     // Called with the destination to open once the search has been dismissed.
     let onOpen: (Route) -> Void
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.locale) private var locale
     @State private var query = ""
     @State private var matches: [ChatSearchHit] = []
     @State private var isSearching = false
@@ -33,11 +34,12 @@ struct ChatSearchView: View {
     }
 
     var body: some View {
+        let _ = locale
         NavigationStack {
             List {
                 Section {
                     if hits.isEmpty && !isSearching {
-                        Text("未找到相关聊天")
+                        Text(L10n.Search.noResults)
                             .font(.system(size: 15))
                             .foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity)
@@ -53,7 +55,7 @@ struct ChatSearchView: View {
                     }
                 } header: {
                     HStack(spacing: 6) {
-                        Text("聊天")
+                        Text(L10n.Search.chats)
                         if isSearching {
                             ProgressView()
                                 .controlSize(.mini)
@@ -62,27 +64,27 @@ struct ChatSearchView: View {
                 }
 
                 if trimmedQuery.isEmpty {
-                    Section("快捷操作") {
-                        quickAction("新聊天", systemImage: "square.and.pencil") {
+                    Section(L10n.Search.quickActions) {
+                        quickAction(L10n.Search.newChat, systemImage: "square.and.pencil") {
                             open(.newThread(NewThreadContext(connectionId: (clients.first { $0.isConnected } ?? clients.first)?.id)))
                         }
-                        quickAction("打开文件夹", systemImage: "folder") {
-                            notice = "即将推出"
+                        quickAction(L10n.Search.openFolder, systemImage: "folder") {
+                            notice = L10n.Common.comingSoon
                         }
-                        quickAction("搜索文件", systemImage: "magnifyingglass") {
-                            notice = "即将推出"
+                        quickAction(L10n.Search.searchFiles, systemImage: "magnifyingglass") {
+                            notice = L10n.Common.comingSoon
                         }
                     }
                 }
             }
             .listStyle(.insetGrouped)
-            .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "搜索聊天")
+            .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: L10n.Search.placeholder)
             .searchFocused($isFocused)
-            .navigationTitle("搜索")
+            .navigationTitle(L10n.Search.title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("关闭", systemImage: "xmark") {
+                    Button(L10n.Common.close, systemImage: "xmark") {
                         dismiss()
                     }
                 }
@@ -109,9 +111,9 @@ struct ChatSearchView: View {
                     Image(systemName: "arrow.triangle.branch")
                         .font(.system(size: 13))
                         .foregroundStyle(.purple)
-                        .accessibilityLabel("分支")
+                        .accessibilityLabel(L10n.Search.branch)
                 }
-                highlighted(hit.result.title.isEmpty ? "新对话" : hit.result.title)
+                highlighted(hit.result.title.isEmpty ? L10n.Home.newChat : hit.result.title)
                     .font(.system(size: 16))
                     .lineLimit(1)
                 Spacer(minLength: 8)

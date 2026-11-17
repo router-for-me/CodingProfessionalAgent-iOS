@@ -196,7 +196,7 @@ final class SkillChipAttachment: NSTextAttachment {
         super.init(data: nil, ofType: nil)
         let font = ComposerTextView.font
         let image = Self.render(displayName: RemoteSkill.displayName(for: name), font: font)
-        image.accessibilityLabel = "技能 \(RemoteSkill.displayName(for: name))"
+        image.accessibilityLabel = L10n.Composer.skillAccessibility(RemoteSkill.displayName(for: name))
         self.image = image
         // Bottom at the descender so the label baseline matches the surrounding text.
         bounds = CGRect(x: 0, y: font.descender, width: image.size.width, height: image.size.height)

@@ -5,6 +5,7 @@ import SwiftUI
 // the environment setup before the copy's next turn.
 struct WorktreeForkSheet: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.locale) private var locale
     let client: DesktopClient
     let session: RemoteSession
     let onForked: (String) -> Void
@@ -33,11 +34,12 @@ struct WorktreeForkSheet: View {
     }
 
     var body: some View {
+        let _ = locale
         NavigationStack {
             Form {
                 Section {
                     if branches.count > 1 {
-                        Picker("分支", selection: $branch) {
+                        Picker(L10n.Worktree.branch, selection: $branch) {
                             ForEach(branches, id: \.self) { name in
                                 Text(name)
                                     .tag(name)
@@ -46,25 +48,25 @@ struct WorktreeForkSheet: View {
                         .pickerStyle(.menu)
                         .tint(Color.secondary)
                     } else {
-                        LabeledContent("分支", value: branch)
+                        LabeledContent(L10n.Worktree.branch, value: branch)
                     }
                     if let project {
-                        LabeledContent("当前项目", value: project.name)
+                        LabeledContent(L10n.Worktree.currentProject, value: project.name)
                     }
                 } footer: {
                     if sourcePath == nil {
-                        Text("未设置项目路径，无法创建工作树。")
+                        Text(L10n.Worktree.noProjectPath)
                             .foregroundStyle(.red)
                     } else {
-                        Text("基于所选分支创建独立的工作树，并分叉当前对话。")
+                        Text(L10n.Worktree.createHint)
                     }
                 }
 
                 Section {
                     environmentRow(
                         id: nil,
-                        title: "不使用环境工作",
-                        detail: "仅创建独立的 Git 工作树，不运行设置脚本"
+                        title: L10n.Worktree.withoutEnvTitle,
+                        detail: L10n.Worktree.withoutEnvDetail
                     )
                     ForEach(environmentProjects) { candidate in
                         environmentRow(
@@ -75,23 +77,23 @@ struct WorktreeForkSheet: View {
                     }
                 } header: {
                     HStack(spacing: 8) {
-                        Text("环境")
+                        Text(L10n.Worktree.environmentSection)
                         if isDetecting {
                             ProgressView()
                                 .controlSize(.mini)
                         }
                     }
                 } footer: {
-                    Text("工作树会在桌面端运行新对话的下一条消息之前创建。")
+                    Text(L10n.Worktree.environmentFooter)
                 }
             }
             .font(.system(size: 17))
             .disabled(isSubmitting)
-            .navigationTitle("在新工作树中继续")
+            .navigationTitle(L10n.Worktree.title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") {
+                    Button(L10n.Common.cancel) {
                         dismiss()
                     }
                     .tint(Color.primary)
@@ -101,15 +103,15 @@ struct WorktreeForkSheet: View {
                     if isSubmitting {
                         ProgressView()
                     } else {
-                        Button("继续") {
+                        Button(L10n.Worktree.continue) {
                             submit()
                         }
                         .disabled(sourcePath == nil)
                     }
                 }
             }
-            .alert("分叉会话失败", isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) {
-                Button("好", role: .cancel) {}
+            .alert(L10n.Worktree.forkFailedTitle, isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) {
+                Button(L10n.Common.ok, role: .cancel) {}
             } message: {
                 Text(errorMessage ?? "")
             }

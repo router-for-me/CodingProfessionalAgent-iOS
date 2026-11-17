@@ -1,7 +1,10 @@
 name: CodingProfessionalAgent
 options:
     bundleIdPrefix: com.luispater
-    developmentLanguage: zh-Hans
+    developmentLanguage: en
+    knownRegions:
+        - en
+        - zh-Hans
     createIntermediateGroups: true
     deploymentTarget:
         iOS: "26.0"

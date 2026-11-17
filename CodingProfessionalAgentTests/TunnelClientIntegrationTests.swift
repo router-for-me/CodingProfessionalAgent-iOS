@@ -156,7 +156,7 @@ final class TunnelClientIntegrationTests: XCTestCase {
         server.closeAllVirtualWebSockets(serverUUID: "srv-1", code: 4401, reason: "password changed")
 
         try await waitUntil("client fails with wrong password") {
-            client.state == .failed("密码错误")
+            client.state == .failed(L10n.ErrorMessage.unauthorized)
         }
         XCTAssertEqual(session.phase, .connected)
     }
@@ -195,7 +195,7 @@ final class TunnelClientIntegrationTests: XCTestCase {
         client.start()
 
         try await waitUntil("client reports server offline") {
-            client.state == .failed("远程桌面端不在线")
+            client.state == .failed(L10n.ErrorMessage.tunnelServerOffline)
         }
 
         // Bring srv-late online; client must connect immediately without waiting for the 5s backoff.
@@ -749,7 +749,7 @@ final class TunnelClientIntegrationTests: XCTestCase {
         revokeServer.closeTunnelWebSocket(code: 1008, reason: "api key revoked")
         try await waitUntil("revoked session failed") {
             if case .failed(let msg) = revSession.phase {
-                return msg.contains("吊销") || msg.contains("API Key")
+                return msg == L10n.ErrorMessage.tunnelAPIKeyRevoked
             }
             return false
         }

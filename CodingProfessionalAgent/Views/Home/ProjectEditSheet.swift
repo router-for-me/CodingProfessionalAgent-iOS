@@ -3,6 +3,7 @@ import SwiftUI
 // Edits a project's name and source folders, or removes it from the app (desktop `ProjectEditDialog`).
 struct ProjectEditSheet: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.locale) private var locale
     let client: DesktopClient
     let project: RemoteProject
     @State private var name: String
@@ -20,13 +21,14 @@ struct ProjectEditSheet: View {
     }
 
     var body: some View {
+        let _ = locale
         NavigationStack {
             Form {
-                Section("项目名称") {
-                    TextField("项目名称", text: $name)
+                Section(L10n.Project.name) {
+                    TextField(L10n.Project.name, text: $name)
                 }
 
-                Section("源文件夹") {
+                Section(L10n.Project.sourceFolders) {
                     ForEach(paths, id: \.self) { path in
                         HStack(spacing: 12) {
                             Image(systemName: "folder")
@@ -49,19 +51,19 @@ struct ProjectEditSheet: View {
                                     .foregroundStyle(Color(.systemGray3))
                             }
                             .buttonStyle(.plain)
-                            .accessibilityLabel("移除源文件夹 \(path)")
+                            .accessibilityLabel(L10n.Project.removeSourceFolder(path))
                         }
                     }
 
                     Button {
                         showsBrowser = true
                     } label: {
-                        Label("添加文件夹", systemImage: "folder.badge.plus")
+                        Label(L10n.Project.addFolder, systemImage: "folder.badge.plus")
                     }
                 }
 
                 Section {
-                    Button("移除项目", role: .destructive) {
+                    Button(L10n.Project.remove, role: .destructive) {
                         confirmsRemoval = true
                     }
                     .frame(maxWidth: .infinity)
@@ -69,18 +71,18 @@ struct ProjectEditSheet: View {
             }
             .font(.system(size: 17))
             .disabled(isSaving)
-            .navigationTitle("编辑项目")
+            .navigationTitle(L10n.Project.edit)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") {
+                    Button(L10n.Common.cancel) {
                         dismiss()
                     }
                     .tint(Color.primary)
                     .disabled(isSaving)
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("保存") {
+                    Button(L10n.Common.save) {
                         save()
                     }
                     .disabled(trimmedName.isEmpty || isSaving)
@@ -94,16 +96,16 @@ struct ProjectEditSheet: View {
                     showsBrowser = false
                 }
             }
-            .alert("移除 \(project.name)？", isPresented: $confirmsRemoval) {
-                Button("取消", role: .cancel) {}
-                Button("移除项目", role: .destructive) {
+            .alert(L10n.Project.removeConfirmNamed(project.name), isPresented: $confirmsRemoval) {
+                Button(L10n.Common.cancel, role: .cancel) {}
+                Button(L10n.Project.remove, role: .destructive) {
                     remove()
                 }
             } message: {
-                Text("该项目下的对话将不再归属任何项目；对话和源文件夹不会被删除。")
+                Text(L10n.Project.removeConfirmMessage)
             }
-            .alert("操作失败", isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) {
-                Button("好", role: .cancel) {}
+            .alert(L10n.Common.actionFailed, isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) {
+                Button(L10n.Common.ok, role: .cancel) {}
             } message: {
                 Text(errorMessage ?? "")
             }
@@ -125,7 +127,7 @@ struct ProjectEditSheet: View {
     }
 
     private func remove() {
-        run(failure: "无法移除项目，请重试") {
+        run(failure: L10n.Project.removeFailed) {
             try await client.removeProject(id: project.id)
         }
     }
@@ -139,7 +141,7 @@ struct ProjectEditSheet: View {
                 dismiss()
             } catch {
                 let message = error.localizedDescription
-                errorMessage = failure.map { "\($0)：\(message)" } ?? message
+                errorMessage = failure.map { L10n.Common.errorWithDetail($0, message) } ?? message
                 isSaving = false
             }
         }

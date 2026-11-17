@@ -4,6 +4,8 @@ import SwiftUI
 struct SettingsView: View {
     @Environment(ConnectionStore.self) private var store
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.locale) private var locale
+    @State private var localization = LocalizationManager.shared
     @State private var editMode: EditMode = .inactive
     @State private var editor: ConnectionEditorTarget?
     @State private var showsAddConnectionDialog = false
@@ -16,6 +18,7 @@ struct SettingsView: View {
     @AppStorage(PreferenceKey.liveActivityMode) private var liveActivityMode = LiveActivityMode.perComputer
 
     var body: some View {
+        let _ = (locale, localization.revision)
         NavigationStack {
             List {
                 Section {
@@ -42,9 +45,9 @@ struct SettingsView: View {
                     addConnectionRow
                 } header: {
                     HStack {
-                        sectionTitle("连接")
+                        sectionTitle(L10n.Settings.connections)
                         Spacer()
-                        Button("全部断开") {
+                        Button(L10n.Settings.disconnectAll) {
                             store.disconnectAll()
                         }
                         .font(.system(size: 15))
@@ -54,40 +57,55 @@ struct SettingsView: View {
                 }
 
                 Section {
-                    Toggle("发送后收起键盘", isOn: $collapseKeyboardAfterSend)
-                    Toggle("显示上下文窗口使用情况", isOn: $showContextUsage)
-                    Picker("后续消息处理方式", selection: $followUpMode) {
+                    Toggle(L10n.Settings.collapseKeyboardAfterSend, isOn: $collapseKeyboardAfterSend)
+                    Toggle(L10n.Settings.showContextUsage, isOn: $showContextUsage)
+                    Picker(L10n.Settings.followUpMode, selection: $followUpMode) {
                         ForEach(FollowUpMode.allCases) { mode in
                             Text(mode.title).tag(mode)
                         }
                     }
+                    .id("followUp-\(locale.identifier)-\(localization.revision)")
                     .pickerStyle(.menu)
                     .tint(Color.secondary)
                 } header: {
-                    sectionTitle("编写器")
+                    sectionTitle(L10n.Settings.composer)
                 }
 
                 Section {
-                    Toggle("任务完成通知", isOn: $notifyOnTurnComplete)
-                    Toggle("代码差异行自动换行", isOn: $wrapDiffLines)
-                    Picker("实时活动", selection: $liveActivityMode) {
+                    Toggle(L10n.Settings.notifyOnTurnComplete, isOn: $notifyOnTurnComplete)
+                    Toggle(L10n.Settings.wrapDiffLines, isOn: $wrapDiffLines)
+                    Picker(L10n.Settings.liveActivityMode, selection: $liveActivityMode) {
                         ForEach(LiveActivityMode.allCases) { mode in
                             Text(mode.title).tag(mode)
                         }
                     }
+                    .id("liveActivity-\(locale.identifier)-\(localization.revision)")
                     .pickerStyle(.menu)
                     .tint(Color.secondary)
                 } header: {
-                    sectionTitle("行为")
+                    sectionTitle(L10n.Settings.behavior)
+                }
+
+                Section {
+                    Picker(L10n.Settings.language, selection: $localization.language) {
+                        ForEach(AppLanguage.allCases) { item in
+                            Text(item.displayName).tag(item)
+                        }
+                    }
+                    .id("language-\(locale.identifier)-\(localization.revision)")
+                    .pickerStyle(.menu)
+                    .tint(Color.secondary)
+                } header: {
+                    sectionTitle(L10n.Settings.general)
                 }
             }
             .font(.system(size: 17))
             .environment(\.editMode, $editMode)
-            .navigationTitle("设置")
+            .navigationTitle(L10n.Settings.title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button(editMode.isEditing ? "完成" : "编辑") {
+                    Button(editMode.isEditing ? L10n.Common.done : L10n.Common.edit) {
                         withAnimation {
                             editMode = editMode.isEditing ? .inactive : .active
                         }
@@ -107,14 +125,14 @@ struct SettingsView: View {
             .sheet(isPresented: $showsTunnelSheet) {
                 TunnelConnectionSheet()
             }
-            .confirmationDialog("添加连接", isPresented: $showsAddConnectionDialog, titleVisibility: .visible) {
-                Button("直连桌面端") {
+            .confirmationDialog(L10n.Connection.addDialogTitle, isPresented: $showsAddConnectionDialog, titleVisibility: .visible) {
+                Button(L10n.Connection.addDirect) {
                     editor = .add
                 }
-                Button("通过 CLIProxyAPI Tunnel 连接") {
+                Button(L10n.Connection.addTunnel) {
                     showsTunnelSheet = true
                 }
-                Button("取消", role: .cancel) {}
+                Button(L10n.Common.cancel, role: .cancel) {}
             }
         }
     }
@@ -127,7 +145,7 @@ struct SettingsView: View {
                 Image(systemName: "plus")
                     .font(.system(size: 24, weight: .light))
                     .frame(width: 34)
-                Text("添加连接")
+                Text(L10n.Settings.addConnection)
             }
             .foregroundStyle(.blue)
             .padding(.vertical, 6)
@@ -156,10 +174,12 @@ enum ConnectionEditorTarget: Identifiable {
 
 private struct ConnectionRow: View {
     @Environment(ConnectionStore.self) private var store
+    @Environment(\.locale) private var locale
     let connection: DesktopConnection
     let state: ConnectionState
 
     var body: some View {
+        let _ = locale
         HStack(spacing: 14) {
             ConnectionIconImage(icon: connection.icon, color: .secondary)
                 .font(.system(size: 24))
@@ -196,11 +216,11 @@ private struct ConnectionRow: View {
     }
 
     private var statusText: String {
-        guard connection.isEnabled else { return "未连接" }
+        guard connection.isEnabled else { return L10n.Connection.statusDisconnected }
         switch state {
-        case .disconnected: return "未连接"
-        case .connecting: return "正在连接…"
-        case .connected: return "已连接"
+        case .disconnected: return L10n.Connection.statusDisconnected
+        case .connecting: return L10n.Connection.statusConnecting
+        case .connected: return L10n.Connection.statusConnected
         case .failed(let message): return message
         }
     }

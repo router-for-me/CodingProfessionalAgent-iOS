@@ -23,17 +23,21 @@ enum DesktopClientError: LocalizedError {
     case invalidAddress
     case notConnected
     case unauthorized
+    case tunnelServerOffline
+    case tunnelServerDisconnected
     case http(Int)
     case timeout(String)
     case remote(String)
 
     var errorDescription: String? {
         switch self {
-        case .invalidAddress: "地址无效"
-        case .notConnected: "桌面端未连接"
-        case .unauthorized: "密码错误"
-        case .http(let code): "服务器返回错误（\(code)）"
-        case .timeout(let method): "请求超时（\(method)）"
+        case .invalidAddress: L10n.ErrorMessage.invalidAddress
+        case .notConnected: L10n.ErrorMessage.notConnected
+        case .unauthorized: L10n.ErrorMessage.unauthorized
+        case .tunnelServerOffline: L10n.ErrorMessage.tunnelServerOffline
+        case .tunnelServerDisconnected: L10n.ErrorMessage.tunnelServerDisconnected
+        case .http(let code): L10n.ErrorMessage.http(code)
+        case .timeout(let method): L10n.ErrorMessage.timeout(method)
         case .remote(let message): message
         }
     }
@@ -177,6 +181,17 @@ final class DesktopClient: Identifiable {
     @ObservationIgnored private var pendingRunVerifications: [String: PendingRunVerification] = [:]
     @ObservationIgnored private var recentlyAbortedRuns: [String: AbortedRunRecord] = [:]
 
+    private enum StateFailureReason {
+        case unauthorized
+        case invalidAddress
+        case tunnelServerOffline
+        case tunnelSessionFailure
+        case transport(Error)
+    }
+
+    @ObservationIgnored private var lastFailureReason: StateFailureReason?
+    @ObservationIgnored nonisolated(unsafe) private var languageObserver: NSObjectProtocol?
+
     init(connection: DesktopConnection, tunnelManager: TunnelClientManager = .shared) {
         self.id = connection.id
         self.connection = connection
@@ -188,6 +203,39 @@ final class DesktopClient: Identifiable {
         configuration.timeoutIntervalForRequest = 15
         configuration.waitsForConnectivity = false
         urlSession = URLSession(configuration: configuration)
+        languageObserver = NotificationCenter.default.addObserver(
+            forName: LocalizationManager.languageDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.refreshFailureStateLocalization()
+            }
+        }
+    }
+
+    deinit {
+        if let languageObserver {
+            NotificationCenter.default.removeObserver(languageObserver)
+        }
+    }
+
+    private func refreshFailureStateLocalization() {
+        guard case .failed = state, let lastFailureReason else { return }
+        switch lastFailureReason {
+        case .unauthorized:
+            state = .failed(L10n.ErrorMessage.unauthorized)
+        case .invalidAddress:
+            state = .failed(L10n.ErrorMessage.invalidAddress)
+        case .tunnelServerOffline:
+            state = .failed(L10n.ErrorMessage.tunnelServerOffline)
+        case .tunnelSessionFailure:
+            if case .failed(let message) = activeTunnelSession?.phase {
+                state = .failed(message)
+            }
+        case .transport(let error):
+            state = .failed(Self.describe(error))
+        }
     }
 
     var isConnected: Bool {
@@ -295,6 +343,7 @@ final class DesktopClient: Identifiable {
         reconnectTask = nil
         closeSocket()
         isTerminalFailure = false
+        lastFailureReason = nil
         state = .connecting
         // Snapshot endpoint and credentials so a stale attempt never mixes them with newer ones.
         let endpoint = connection
@@ -495,13 +544,14 @@ final class DesktopClient: Identifiable {
             reconnectTask = nil
             closeSocket()
             isTerminalFailure = true
+            lastFailureReason = .tunnelSessionFailure
             state = .failed(message)
             return
         }
         if session.phase == .connected,
            session.isServerOnline(connection.tunnelServerUUID),
            state != .connected,
-           state != .failed("密码错误"),
+           !isTerminalFailure,
            !(state == .connecting && reconnectTask == nil)
         {
             retryCount = 0
@@ -614,6 +664,7 @@ final class DesktopClient: Identifiable {
         failPending(DesktopClientError.notConnected)
         guard shouldRun else {
             isTerminalFailure = false
+            lastFailureReason = nil
             state = .disconnected
             return
         }
@@ -624,54 +675,62 @@ final class DesktopClient: Identifiable {
         if connection.mode == .tunnel, let session = activeTunnelSession {
             if case .failed(let terminalMessage) = session.phase {
                 isTerminalFailure = true
+                lastFailureReason = .tunnelSessionFailure
                 state = .failed(terminalMessage)
                 return
             }
             if session.hasReceivedInitialServerList, !session.isServerOnline(connection.tunnelServerUUID) {
                 isTerminalFailure = false
-                state = .failed("远程桌面端不在线")
+                lastFailureReason = .tunnelServerOffline
+                state = .failed(L10n.ErrorMessage.tunnelServerOffline)
                 return
             }
         }
-        scheduleReconnect(message: Self.describe(error))
+        scheduleReconnect(error: error)
     }
 
     private func handleConnectFailure(_ error: Error) {
         if case DesktopClientError.unauthorized = error {
             // A wrong password will not fix itself; wait for the user to edit the connection.
             isTerminalFailure = true
-            state = .failed("密码错误")
+            lastFailureReason = .unauthorized
+            state = .failed(L10n.ErrorMessage.unauthorized)
             return
         }
         if case DesktopClientError.invalidAddress = error {
             isTerminalFailure = true
-            state = .failed("地址无效")
+            lastFailureReason = .invalidAddress
+            state = .failed(L10n.ErrorMessage.invalidAddress)
             return
         }
         if error is TunnelProtocolError {
             isTerminalFailure = true
+            lastFailureReason = .transport(error)
             state = .failed(error.localizedDescription)
             return
         }
         if connection.mode == .tunnel, let session = activeTunnelSession {
             if case .failed(let terminalMessage) = session.phase {
                 isTerminalFailure = true
+                lastFailureReason = .tunnelSessionFailure
                 state = .failed(terminalMessage)
                 return
             }
             if session.hasReceivedInitialServerList, !session.isServerOnline(connection.tunnelServerUUID) {
                 isTerminalFailure = false
-                state = .failed("远程桌面端不在线")
+                lastFailureReason = .tunnelServerOffline
+                state = .failed(L10n.ErrorMessage.tunnelServerOffline)
                 return
             }
         }
-        scheduleReconnect(message: Self.describe(error))
+        scheduleReconnect(error: error)
     }
 
-    private func scheduleReconnect(message: String) {
+    private func scheduleReconnect(error: Error) {
         retryCount += 1
         isTerminalFailure = false
-        state = retryCount > 2 ? .failed(message) : .connecting
+        lastFailureReason = retryCount > 2 ? .transport(error) : nil
+        state = retryCount > 2 ? .failed(Self.describe(error)) : .connecting
         let delay = min(1.5 * pow(2, Double(min(retryCount - 1, 4))), 20)
         let current = generation
         reconnectTask?.cancel()
@@ -2372,14 +2431,14 @@ final class DesktopClient: Identifiable {
     func forkSession(id sessionId: String, atEntryId: String? = nil, worktree: WorktreeFork? = nil) async throws -> String {
         let snapshot = try await call("session:get", [.string(sessionId)])
         guard let sourceEntries = snapshot["entries"]?.arrayValue else {
-            throw DesktopClientError.remote("无法读取对话内容")
+            throw DesktopClientError.remote(L10n.ErrorMessage.unableReadEntries)
         }
         // A sub-agent conversation is not in the session list (desktop `listSessions` filters
         // `is_subagent = 0`), and `session:get` does not return its project, branch or title either;
         // forking it without the desktop's `getMeta` RPC would silently drop that context, so it is
         // refused instead.
         guard let source = session(id: sessionId) else {
-            throw DesktopClientError.remote("子代理对话暂不支持分叉")
+            throw DesktopClientError.remote(L10n.ErrorMessage.cannotForkSubagent)
         }
         let newId = UUID().uuidString.lowercased()
         // Forks from a message end after its trailing tool results; other ids (or none) copy everything.
@@ -2484,7 +2543,7 @@ final class DesktopClient: Identifiable {
     private func updateProject(id projectId: String, _ change: @escaping (inout [String: JSONValue]) -> Void) async throws {
         try await updateProjects { projects in
             guard projects.contains(where: { $0["id"]?.stringValue == projectId }) else {
-                throw DesktopClientError.remote("项目不存在")
+                throw DesktopClientError.remote(L10n.ErrorMessage.projectNotFound)
             }
             return projects.map { project in
                 guard project["id"]?.stringValue == projectId, var object = project.objectValue else { return project }
@@ -2504,7 +2563,7 @@ final class DesktopClient: Identifiable {
             await previous?.value
             let stored = try await call("kvstore:get", ["projects"])
             guard let list = stored.isNull ? [] : stored.arrayValue else {
-                throw DesktopClientError.remote("无法读取项目列表")
+                throw DesktopClientError.remote(L10n.ErrorMessage.unableReadProjects)
             }
             _ = try await call("kvstore:set", ["projects", .array(try transform(list))])
         }
@@ -2535,7 +2594,7 @@ final class DesktopClient: Identifiable {
     func directoryEntries(of path: String) async throws -> [(name: String, isDir: Bool)] {
         let value = try await call("native:readDir", [.string(path)], timeout: 15)
         guard let entries = value.arrayValue else {
-            throw DesktopClientError.remote("文件夹不存在")
+            throw DesktopClientError.remote(L10n.ErrorMessage.directoryNotFound)
         }
         return entries
             .compactMap { entry -> (name: String, isDir: Bool)? in
@@ -2560,7 +2619,7 @@ final class DesktopClient: Identifiable {
         guard let encoded = value["dataBase64"]?.stringValue,
               let data = Data(base64Encoded: encoded)
         else {
-            throw DesktopClientError.remote("无法读取文件")
+            throw DesktopClientError.remote(L10n.ErrorMessage.unableReadFile)
         }
         return String(decoding: data, as: UTF8.self)
     }
@@ -2593,7 +2652,7 @@ final class DesktopClient: Identifiable {
     func subdirectories(of path: String) async throws -> [String] {
         let value = try await call("native:readDir", [.string(path)], timeout: 15)
         guard let entries = value.arrayValue else {
-            throw DesktopClientError.remote("文件夹不存在")
+            throw DesktopClientError.remote(L10n.ErrorMessage.directoryNotFound)
         }
         return entries
             .compactMap { $0["isDir"]?.boolValue == true ? $0["name"]?.stringValue : nil }
@@ -2609,7 +2668,7 @@ final class DesktopClient: Identifiable {
         guard !files.isEmpty else { return [] }
         let info = try await call("native:runtimeInfo")
         guard let homeDir = info["homeDir"]?.stringValue, !homeDir.isEmpty else {
-            throw DesktopClientError.remote("无法获取桌面端主目录")
+            throw DesktopClientError.remote(L10n.ErrorMessage.unableReadHomeDir)
         }
         let configDirName = info["appConfigDirName"]?.stringValue
             ?? (info["isDebug"]?.boolValue == true ? ".coding-professional-agent-dev" : ".coding-professional-agent")
@@ -2933,27 +2992,27 @@ final class DesktopClient: Identifiable {
         if let text = message["errorDto"]?["message"]?.stringValue {
             return text
         }
-        return "RPC 调用失败"
+        return L10n.ErrorMessage.rpcFailed
     }
 
     private static func describe(_ error: Error) -> String {
         if let clientError = error as? DesktopClientError {
-            return clientError.errorDescription ?? "连接失败"
+            return clientError.errorDescription ?? L10n.ErrorMessage.connectionFailed
         }
         if let urlError = error as? URLError {
             switch urlError.code {
             case .cannotConnectToHost, .networkConnectionLost:
-                return "无法连接到桌面端"
+                return L10n.ErrorMessage.cannotConnect
             case .cannotFindHost, .dnsLookupFailed:
-                return "找不到主机"
+                return L10n.ErrorMessage.hostNotFound
             case .timedOut:
-                return "连接超时"
+                return L10n.ErrorMessage.connectionTimedOut
             case .notConnectedToInternet:
-                return "网络不可用"
+                return L10n.ErrorMessage.networkUnavailable
             default:
                 break
             }
         }
-        return "连接已断开"
+        return L10n.ErrorMessage.connectionLost
     }
 }

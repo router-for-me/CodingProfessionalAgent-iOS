@@ -3,20 +3,22 @@ import UIKit
 
 struct ThreadView: View {
     @Environment(ConnectionStore.self) private var store
+    @Environment(\.locale) private var locale
     let connectionId: UUID
     let sessionId: String
     var graceConfiguration: ConnectionGraceConfiguration = .standard
 
     var body: some View {
+        let _ = locale
         if let client = store.client(for: connectionId) {
             // Key by connection and session so replacing a thread route in place never reuses another conversation's state.
             ThreadContent(client: client, sessionId: sessionId, graceConfiguration: graceConfiguration)
                 .id("\(client.id.uuidString)/\(sessionId)")
         } else {
             ContentUnavailableView(
-                "连接不可用",
+                L10n.Thread.connectionUnavailableTitle,
                 systemImage: "bolt.horizontal.circle",
-                description: Text("该桌面端连接已被删除。")
+                description: Text(L10n.Thread.connectionUnavailableMessage)
             )
         }
     }
@@ -24,30 +26,31 @@ struct ThreadView: View {
     @MainActor
     static func resolvedTitle(model: ThreadModel, router: Router) -> String {
         if let session = model.session {
-            return session.title.isEmpty ? "新对话" : session.title
+            return session.title.isEmpty ? L10n.Home.newChat : session.title
         }
         if let hint = router.sessionTitleHint(connectionId: model.client.id, sessionId: model.sessionId) {
             return hint
         }
-        return (model.isWaitingForConnection || model.isLoading) ? "对话" : "新对话"
+        return (model.isWaitingForConnection || model.isLoading) ? L10n.Thread.chatTitle : L10n.Home.newChat
     }
 
     @MainActor
     static func resolvedComposerPlaceholder(model: ThreadModel) -> String {
         let client = model.client
         if client.isConnected {
-            return "在 \(client.connection.displayName) 上工作"
+            return L10n.Thread.workOnDesktop(client.connection.displayName)
         }
         if model.isWaitingForConnection || client.state == .connecting {
-            return "正在连接 \(client.connection.displayName)…"
+            return L10n.Home.clientConnecting(client.connection.displayName)
         }
-        return "桌面端未连接"
+        return L10n.ErrorMessage.notConnected
     }
 }
 
 private struct ThreadContent: View {
     @Environment(Router.self) private var router
     @Environment(\.navigationWidth) private var navigationWidth
+    @Environment(\.locale) private var locale
     @State private var model: ThreadModel
     @State private var draft = ComposerDraft()
     @State private var attachments = ComposerAttachments()
@@ -158,7 +161,7 @@ private struct ThreadContent: View {
     }
 
     private var modelTitle: String {
-        currentModel?.label ?? (currentModelId.isEmpty ? "默认模型" : currentModelId)
+        currentModel?.label ?? (currentModelId.isEmpty ? L10n.Common.defaultModel : currentModelId)
     }
 
     private var reasoningChoices: [ReasoningChoice] {
@@ -234,6 +237,99 @@ private struct ThreadContent: View {
     }
 
     var body: some View {
+        let _ = locale
+        return baseContent
+            .onChange(of: showsReasoningSlider) { _, isShown in
+                if !isShown {
+                    applyPickedReasoning()
+                }
+            }
+            .onChange(of: model.isRunning) { _, isRunning in
+                if isRunning {
+                    // Like the desktop's model menu, a starting run closes the model settings opened before it.
+                    if !sheetLocksModel {
+                        showsModelSheet = false
+                    }
+                } else {
+                    // A finished run unlocks the open settings; closing them then applies the full selection.
+                    sheetLocksModel = false
+                }
+            }
+            .onChange(of: model.askRequest?.id) { _, id in
+                showsAsk = id != nil
+            }
+            .onChange(of: isEditedEntryShown) { _, isShown in
+                // The prompt was removed, e.g. by an edit or deletion on another client.
+                if !isShown {
+                    endEdit()
+                }
+            }
+            .onChange(of: model.failedEdit) { _, failed in
+                // Like the desktop composer after a failed preflight, the edited text is kept for another try.
+                guard let failed, model.entries.contains(where: { $0.id == failed.entry.id }) else { return }
+                editDraft = ComposerDraft(text: failed.entry.text, references: failed.entry.skillReferences ?? [])
+                editingEntryId = failed.entry.id
+                errorMessage = L10n.Thread.editFailedMessage
+            }
+            .task(id: skillsKey) {
+                await client.loadSkills(projectPath: projectPath)
+            }
+            .onChange(of: sheetModelId) {
+                normalizeSheetSelection()
+            }
+            .onChange(of: router.externalNavigationRevision) { _, _ in
+                showsAttachmentMenu = false
+                showsReasoningSlider = false
+                showsModelSheet = false
+                showsAsk = false
+                panelTab = nil
+                showsRename = false
+                errorMessage = nil
+                model.handleExternalNavigation()
+            }
+            .sheet(isPresented: $showsModelSheet, onDismiss: applyModelSheet) {
+                AdvancedSettingsSheet(
+                    models: client.availableModels,
+                    modelId: $sheetModelId,
+                    reasoningChoices: client.reasoningChoices(for: client.model(id: sheetModelId)),
+                    reasoning: $sheetReasoning,
+                    supportsFast: client.model(id: sheetModelId)?.supportsFast ?? false,
+                    speed: $sheetSpeed,
+                    isRunActive: sheetLocksModel
+                )
+            }
+            .transientNotice($notice)
+            .sheet(isPresented: $showsAsk) {
+                if let request = model.askRequest {
+                    AskSheet(
+                        request: request,
+                        onSubmit: { decision in
+                            try await model.answerAsk(decision)
+                        },
+                        onCancelCountdown: {
+                            await model.cancelAskCountdown()
+                        }
+                    )
+                }
+            }
+            .sheet(item: $panelTab) { tab in
+                SessionPanelSheet(client: client, session: model.session, initialTab: tab)
+            }
+            .alert(L10n.Thread.renameTitle, isPresented: $showsRename) {
+                TextField(L10n.Common.title, text: $renameText)
+                Button(L10n.Common.cancel, role: .cancel) {}
+                Button(L10n.Common.save) {
+                    rename()
+                }
+            }
+            .alert(L10n.Common.actionFailed, isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) {
+                Button(L10n.Common.ok, role: .cancel) {}
+            } message: {
+                Text(errorMessage ?? "")
+            }
+    }
+
+    private var baseContent: some View {
         ScrollViewReader { proxy in
             messageList(proxy)
         }
@@ -248,7 +344,7 @@ private struct ThreadContent: View {
                     }
                 }
                 if showContextUsage, let usage = model.contextUsage {
-                    Text("上下文已使用 \(Int((usage * 100).rounded()))%")
+                    Text(L10n.Thread.contextUsage(Int((usage * 100).rounded())))
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .trailing)
@@ -336,94 +432,6 @@ private struct ThreadContent: View {
             if showsReasoningSlider {
                 applyPickedReasoning()
             }
-        }
-        .onChange(of: showsReasoningSlider) { _, isShown in
-            if !isShown {
-                applyPickedReasoning()
-            }
-        }
-        .onChange(of: model.isRunning) { _, isRunning in
-            if isRunning {
-                // Like the desktop's model menu, a starting run closes the model settings opened before it.
-                if !sheetLocksModel {
-                    showsModelSheet = false
-                }
-            } else {
-                // A finished run unlocks the open settings; closing them then applies the full selection.
-                sheetLocksModel = false
-            }
-        }
-        .onChange(of: model.askRequest?.id) { _, id in
-            showsAsk = id != nil
-        }
-        .onChange(of: isEditedEntryShown) { _, isShown in
-            // The prompt was removed, e.g. by an edit or deletion on another client.
-            if !isShown {
-                endEdit()
-            }
-        }
-        .onChange(of: model.failedEdit) { _, failed in
-            // Like the desktop composer after a failed preflight, the edited text is kept for another try.
-            guard let failed, model.entries.contains(where: { $0.id == failed.entry.id }) else { return }
-            editDraft = ComposerDraft(text: failed.entry.text, references: failed.entry.skillReferences ?? [])
-            editingEntryId = failed.entry.id
-            errorMessage = "桌面端未能执行编辑后的消息，已恢复编辑内容，请检查桌面端后重试。"
-        }
-        .task(id: skillsKey) {
-            await client.loadSkills(projectPath: projectPath)
-        }
-        .onChange(of: sheetModelId) {
-            normalizeSheetSelection()
-        }
-        .onChange(of: router.externalNavigationRevision) { _, _ in
-            showsAttachmentMenu = false
-            showsReasoningSlider = false
-            showsModelSheet = false
-            showsAsk = false
-            panelTab = nil
-            showsRename = false
-            errorMessage = nil
-            model.handleExternalNavigation()
-        }
-        .sheet(isPresented: $showsModelSheet, onDismiss: applyModelSheet) {
-            AdvancedSettingsSheet(
-                models: client.availableModels,
-                modelId: $sheetModelId,
-                reasoningChoices: client.reasoningChoices(for: client.model(id: sheetModelId)),
-                reasoning: $sheetReasoning,
-                supportsFast: client.model(id: sheetModelId)?.supportsFast ?? false,
-                speed: $sheetSpeed,
-                isRunActive: sheetLocksModel
-            )
-        }
-        .transientNotice($notice)
-        .sheet(isPresented: $showsAsk) {
-            if let request = model.askRequest {
-                AskSheet(
-                    request: request,
-                    onSubmit: { decision in
-                        try await model.answerAsk(decision)
-                    },
-                    onCancelCountdown: {
-                        await model.cancelAskCountdown()
-                    }
-                )
-            }
-        }
-        .sheet(item: $panelTab) { tab in
-            SessionPanelSheet(client: client, session: model.session, initialTab: tab)
-        }
-        .alert("重命名对话", isPresented: $showsRename) {
-            TextField("标题", text: $renameText)
-            Button("取消", role: .cancel) {}
-            Button("保存") {
-                rename()
-            }
-        }
-        .alert("操作失败", isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) {
-            Button("好", role: .cancel) {}
-        } message: {
-            Text(errorMessage ?? "")
         }
     }
 
@@ -527,25 +535,25 @@ private struct ThreadContent: View {
             }
             Menu {
                 let pinned = model.session?.pinned ?? false
-                Button(pinned ? "取消置顶" : "置顶", systemImage: pinned ? "pin.slash" : "pin") {
+                Button(pinned ? L10n.Home.unpin : L10n.Thread.pin, systemImage: pinned ? "pin.slash" : "pin") {
                     togglePinned()
                 }
-                Button("重命名", systemImage: "pencil") {
+                Button(L10n.Thread.rename, systemImage: "pencil") {
                     renameText = model.session?.title ?? ""
                     showsRename = true
                 }
-                Button("复制对话串 ID", systemImage: "doc.on.doc") {
+                Button(L10n.Thread.copyThreadId, systemImage: "doc.on.doc") {
                     UIPasteboard.general.string = model.sessionId
-                    notice = "已复制到剪贴板"
+                    notice = L10n.Common.copiedToClipboard
                 }
-                Button("归档", systemImage: "archivebox", role: .destructive) {
+                Button(L10n.Thread.archive, systemImage: "archivebox", role: .destructive) {
                     archive()
                 }
                 Section {
-                    Button("更改", systemImage: "arrow.triangle.branch") {
+                    Button(L10n.Panels.changes, systemImage: "arrow.triangle.branch") {
                         panelTab = .changes
                     }
-                    Button("文件", systemImage: "folder") {
+                    Button(L10n.Panels.files, systemImage: "folder") {
                         panelTab = .files
                     }
                 }
@@ -558,23 +566,23 @@ private struct ThreadContent: View {
     @ViewBuilder
     private var placeholderOverlay: some View {
         if model.isDeleted {
-            ContentUnavailableView("对话已删除", systemImage: "trash", description: Text("该对话已在桌面端被删除。"))
+            ContentUnavailableView(L10n.Thread.deletedTitle, systemImage: "trash", description: Text(L10n.Thread.deletedMessage))
         } else if visibleEntries.isEmpty {
             if let error = model.connectionError {
                 ThreadStatusPlaceholder(
                     systemImage: "bolt.horizontal.circle",
-                    title: "无法连接到桌面端",
+                    title: L10n.Thread.cannotConnectTitle,
                     message: ThreadStatusPlaceholder.connectionMessage(error, desktopName: client.connection.displayName),
-                    actionTitle: client.connection.isEnabled ? "重试" : nil,
+                    actionTitle: client.connection.isEnabled ? L10n.Common.retry : nil,
                     action: { model.retryConnection() }
                 )
                 .transition(.opacity)
             } else if let error = model.loadError {
                 ThreadStatusPlaceholder(
                     systemImage: "exclamationmark.triangle",
-                    title: "加载失败",
+                    title: L10n.Thread.loadFailedTitle,
                     message: error,
-                    actionTitle: "重试",
+                    actionTitle: L10n.Common.retry,
                     action: { model.refresh() }
                 )
                 .transition(.opacity)
@@ -688,7 +696,7 @@ private struct ThreadContent: View {
         Task {
             do {
                 try await client.setSessionRuntime(id: model.sessionId, speed: speed.rawValue)
-                notice = speed == .fast ? "已开启快速模式" : "已恢复标准速度"
+                notice = speed == .fast ? L10n.Composer.fastModeEnabledNotice : L10n.Composer.fastModeDisabledNotice
             } catch {
                 errorMessage = error.localizedDescription
             }
@@ -699,7 +707,7 @@ private struct ThreadContent: View {
         Task {
             do {
                 try await client.compactSession(id: model.sessionId)
-                notice = "已请求压缩上下文"
+                notice = L10n.Thread.compactRequested
             } catch {
                 errorMessage = error.localizedDescription
             }
@@ -795,7 +803,7 @@ private struct ThreadContent: View {
             guard canChangeModel else { return }
             do {
                 try await client.setSessionRuntime(id: model.sessionId, modelId: modelId, reasoningEffort: reasoning, speed: speed)
-                notice = modelChanged ? "已切换到 \(label)" : "已更新模型设置"
+                notice = modelChanged ? L10n.Thread.modelSwitched(label) : L10n.Thread.modelUpdated
             } catch {
                 errorMessage = error.localizedDescription
             }
@@ -1029,7 +1037,7 @@ private struct JumpToBottomButton: View {
         }
         .buttonStyle(.plain)
         .glassEffect(.regular.interactive(), in: .circle)
-        .accessibilityLabel("回到底部")
+        .accessibilityLabel(L10n.Thread.scrollToBottom)
     }
 }
 
@@ -1056,13 +1064,15 @@ private struct FollowMetrics: Equatable {
 
 // Shown above the composer when the agent is waiting for an answer.
 private struct AskBanner: View {
+    @Environment(\.locale) private var locale
     let action: () -> Void
 
     var body: some View {
+        let _ = locale
         Button(action: action) {
             HStack(spacing: 8) {
                 Image(systemName: "questionmark.bubble")
-                Text("CPA 正在等待你的回答")
+                Text(L10n.Ask.banner)
                 Spacer()
                 Image(systemName: "chevron.up")
                     .font(.system(size: 13, weight: .semibold))
@@ -1083,13 +1093,14 @@ struct ConversationLoadingView: View {
     let desktopName: String
     let isConnected: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.locale) private var locale
 
     static func statusTitle(isConnected: Bool, desktopName: String) -> String {
-        isConnected ? "正在加载对话…" : "正在连接 \(desktopName)…"
+        isConnected ? L10n.Thread.loadingMessagesTitle : L10n.Thread.loadingConnectingTitle(desktopName)
     }
 
     static func statusDetail(isConnected: Bool) -> String {
-        isConnected ? "正在同步最新消息记录" : "连接建立后将自动显示会话内容"
+        isConnected ? L10n.Thread.loadingMessagesDetail : L10n.Thread.loadingWaitingDetail
     }
 
     private var statusTitle: String {
@@ -1101,6 +1112,7 @@ struct ConversationLoadingView: View {
     }
 
     var body: some View {
+        let _ = locale
         VStack(spacing: 16) {
             emblem
             VStack(spacing: 5) {
@@ -1117,7 +1129,7 @@ struct ConversationLoadingView: View {
         .padding(.horizontal, 32)
         .animation(.easeInOut(duration: 0.2), value: isConnected)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(statusTitle)，\(statusDetail)")
+        .accessibilityLabel(L10n.Thread.loadingAccessibilityLabel(statusTitle, statusDetail))
     }
 
     @ViewBuilder
@@ -1160,6 +1172,7 @@ struct ConversationLoadingView: View {
 
 // Connection or load failure placeholder styled consistently with the home screen's empty states.
 struct ThreadStatusPlaceholder: View {
+    @Environment(\.locale) private var locale
     let systemImage: String
     let title: String
     let message: String
@@ -1168,16 +1181,20 @@ struct ThreadStatusPlaceholder: View {
 
     static func connectionMessage(_ rawError: String, desktopName: String) -> String {
         let trimmed = rawError.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty || trimmed == "桌面端未连接" || trimmed == "无法连接到桌面端" {
-            return "未能连接到 \(desktopName)，请确认桌面端正在运行且网络连接正常。"
+        if trimmed.isEmpty
+            || trimmed == L10n.ErrorMessage.notConnected
+            || trimmed == L10n.ErrorMessage.cannotConnect
+        {
+            return L10n.Thread.cannotConnectDetail(desktopName)
         }
         if trimmed.contains(desktopName) {
             return trimmed
         }
-        return "\(desktopName)：\(trimmed)"
+        return L10n.Common.errorWithDetail(desktopName, trimmed)
     }
 
     var body: some View {
+        let _ = locale
         VStack(spacing: 14) {
             Image(systemName: systemImage)
                 .font(.system(size: 40, weight: .light))

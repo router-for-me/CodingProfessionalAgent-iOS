@@ -159,12 +159,12 @@ struct ReasoningChoice: Identifiable, Hashable {
 
     static func title(for id: String, fallback: String? = nil) -> String {
         switch id.lowercased() {
-        case "off": "关闭"
-        case "minimal": "最低"
-        case "low": "低"
-        case "medium": "中"
-        case "high": "高"
-        case "xhigh": "极高"
+        case "off": L10n.Model.reasoningOff
+        case "minimal": L10n.Model.reasoningMinimal
+        case "low": L10n.Model.reasoningLow
+        case "medium": L10n.Model.reasoningMedium
+        case "high": L10n.Model.reasoningHigh
+        case "xhigh": L10n.Model.reasoningXhigh
         case "max": "Max"
         case "ultra": "Ultra"
         default: fallback ?? id
@@ -180,8 +180,8 @@ enum SpeedMode: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .standard: "标准"
-        case .fast: "快速"
+        case .standard: L10n.Model.speedStandard
+        case .fast: L10n.Model.speedFast
         }
     }
 }
@@ -194,8 +194,8 @@ enum WorkLocation: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .local: "在本地工作"
-        case .worktree: "在工作树中工作"
+        case .local: L10n.Model.workLocationLocal
+        case .worktree: L10n.Model.workLocationWorktree
         }
     }
 }
@@ -209,8 +209,8 @@ enum FollowUpMode: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .queue: "排队"
-        case .steer: "引导"
+        case .queue: L10n.Model.followUpQueue
+        case .steer: L10n.Model.followUpSteer
         }
     }
 }
@@ -224,9 +224,9 @@ enum LiveActivityMode: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .perComputer: "每台远程电脑一张卡片"
-        case .perTask: "每个任务一张卡片"
-        case .off: "关闭"
+        case .perComputer: L10n.Model.liveActivityPerComputer
+        case .perTask: L10n.Model.liveActivityPerTask
+        case .off: L10n.Model.liveActivityOff
         }
     }
 }
@@ -241,4 +241,5 @@ enum PreferenceKey {
     static let liveActivityMode = "behavior.liveActivityMode"
     static let lastTunnelBaseURL = "tunnel.lastBaseURL"
     static let tunnelClientUUID = "tunnel.clientUUID"
+    static let appLanguage = "app.language"
 }

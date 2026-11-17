@@ -3,6 +3,7 @@ import SwiftUI
 struct NewThreadView: View {
     @Environment(Router.self) private var router
     @Environment(ConnectionStore.self) private var store
+    @Environment(\.locale) private var locale
     @State private var connectionId: UUID?
     @State private var projectId: String?
     @State private var workLocation = WorkLocation.local
@@ -60,7 +61,7 @@ struct NewThreadView: View {
     }
 
     private var modelTitle: String {
-        selectedModel?.label ?? "默认模型"
+        selectedModel?.label ?? L10n.Common.defaultModel
     }
 
     // Position of the selected level among the model's levels, matching the slider (lowest 0, highest 1).
@@ -93,7 +94,7 @@ struct NewThreadView: View {
         if selectedModel?.supportsFast == true {
             commands.append(.fast(isOn: speed == .fast) {
                 speed = speed == .fast ? .standard : .fast
-                notice = speed == .fast ? "已开启快速模式" : "已恢复标准速度"
+                notice = speed == .fast ? L10n.Composer.fastModeEnabledNotice : L10n.Composer.fastModeDisabledNotice
             })
         }
         commands.append(.model(current: selectedModel?.label) {
@@ -104,6 +105,7 @@ struct NewThreadView: View {
     }
 
     var body: some View {
+        let _ = locale
         VStack(alignment: .leading, spacing: 0) {
             Spacer()
 
@@ -113,9 +115,9 @@ struct NewThreadView: View {
                     .padding(.bottom, 8)
             } else {
                 ContentUnavailableView(
-                    "没有可用的桌面端",
+                    L10n.NewThread.noDesktopTitle,
                     systemImage: "display",
-                    description: Text("请先在设置中添加并打开桌面端连接。")
+                    description: Text(L10n.NewThread.noDesktopMessage)
                 )
                 Spacer()
             }
@@ -124,7 +126,7 @@ struct NewThreadView: View {
                 draft: $draft,
                 attachments: $attachments,
                 isFocused: $isPromptFocused,
-                placeholder: "向 CPA 提问",
+                placeholder: L10n.Composer.askPlaceholder,
                 isSending: isSending,
                 commands: commands,
                 skills: skills,
@@ -180,8 +182,8 @@ struct NewThreadView: View {
                 speed: $speed
             )
         }
-        .alert("无法创建对话", isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) {
-            Button("好", role: .cancel) {}
+        .alert(L10n.NewThread.createFailedTitle, isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) {
+            Button(L10n.Common.ok, role: .cancel) {}
         } message: {
             Text(errorMessage ?? "")
         }
@@ -235,13 +237,13 @@ struct NewThreadView: View {
             )
             ContextSelector(
                 systemImage: "folder",
-                title: client.project(id: effectiveProjectId(for: client))?.name ?? "不使用项目",
+                title: client.project(id: effectiveProjectId(for: client))?.name ?? L10n.NewThread.noProject,
                 selection: Binding(
                     get: { effectiveProjectId(for: client) ?? Self.noProject },
                     set: { projectId = $0 }
                 ),
                 options: client.projects.map { SelectorOption(value: $0.id, title: $0.name) }
-                    + [SelectorOption(value: Self.noProject, title: "不使用项目")]
+                    + [SelectorOption(value: Self.noProject, title: L10n.NewThread.noProject)]
             )
             ContextSelector(
                 systemImage: "laptopcomputer",
@@ -258,7 +260,7 @@ struct NewThreadView: View {
                 )
             }
             if !client.isConnected {
-                Text(client.state == .connecting ? "正在连接桌面端…" : "桌面端未连接")
+                Text(client.state == .connecting ? L10n.NewThread.connectingDesktop : L10n.ErrorMessage.notConnected)
                     .font(.system(size: 14))
                     .foregroundStyle(.orange)
                     .frame(height: 32)
@@ -346,7 +348,7 @@ struct NewThreadView: View {
         let sentAttachments = attachments
         guard !text.isEmpty || !sentAttachments.isEmpty else { return }
         guard client.isConnected else {
-            errorMessage = "桌面端未连接"
+            errorMessage = L10n.ErrorMessage.notConnected
             return
         }
         if !sentAttachments.images.isEmpty, selectedModel?.supportsImages != true {

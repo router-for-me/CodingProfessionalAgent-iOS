@@ -15,8 +15,8 @@ struct SlashCommand: Identifiable {
         SlashCommand(
             id: "fast",
             systemImage: "bolt.fill",
-            title: "快速",
-            subtitle: isOn ? "已开启，选择后恢复标准速度" : "提升响应速度，用量增加",
+            title: L10n.Composer.fastTitle,
+            subtitle: isOn ? L10n.Composer.fastSubtitleOn : L10n.Composer.fastSubtitleOff,
             keywords: ["fast", "speed", "快速", "kuaisu"],
             action: action
         )
@@ -27,8 +27,8 @@ struct SlashCommand: Identifiable {
         SlashCommand(
             id: "compact",
             systemImage: "arrow.down.right.and.arrow.up.left",
-            title: "压缩",
-            subtitle: "压缩对话上下文",
+            title: L10n.Composer.compactTitle,
+            subtitle: L10n.Composer.compactSubtitle,
             keywords: ["compact", "compress", "压缩", "yasuo"],
             dismissesKeyboard: true,
             action: action
@@ -39,8 +39,8 @@ struct SlashCommand: Identifiable {
         SlashCommand(
             id: "model",
             systemImage: "cpu",
-            title: "模型",
-            subtitle: current.map { "当前：\($0)" } ?? "选择模型与推理强度",
+            title: L10n.Composer.modelTitle,
+            subtitle: current.map { L10n.Composer.modelSubtitleCurrent($0) } ?? L10n.Composer.modelSubtitleDefault,
             keywords: ["model", "models", "模型", "moxing"],
             dismissesKeyboard: true,
             action: action
@@ -176,8 +176,8 @@ private struct ComposerMenuRow: View {
 
     private var kind: String {
         switch item.target {
-        case .command: "命令"
-        case .skill: "技能"
+        case .command: L10n.Composer.commandKind
+        case .skill: L10n.Composer.skillKind
         }
     }
 
