@@ -5,10 +5,18 @@ import UserNotifications
 @MainActor
 protocol UserNotificationManaging: AnyObject {
     var onOpenSession: (@MainActor (_ connectionId: UUID, _ sessionId: String) -> Void)? { get set }
+    var onOpenSessionWithTitle: (@MainActor (_ connectionId: UUID, _ sessionId: String, _ sessionTitle: String?) -> Void)? { get set }
     var isForegroundSuppressed: (@MainActor () -> Bool)? { get set }
     func isAuthorized() async -> Bool
     func requestAuthorizationIfNeeded() async -> Bool
     func clearBadgeAndDeliveredNotifications() async
+}
+
+extension UserNotificationManaging {
+    var onOpenSessionWithTitle: (@MainActor (_ connectionId: UUID, _ sessionId: String, _ sessionTitle: String?) -> Void)? {
+        get { nil }
+        set {}
+    }
 }
 
 @MainActor
@@ -21,6 +29,9 @@ protocol RemoteNotificationRegistering: AnyObject {
 final class SystemUserNotificationManager: UserNotificationManaging {
     var onOpenSession: (@MainActor (_ connectionId: UUID, _ sessionId: String) -> Void)? {
         didSet { delegateBridge.onOpenSession = onOpenSession }
+    }
+    var onOpenSessionWithTitle: (@MainActor (_ connectionId: UUID, _ sessionId: String, _ sessionTitle: String?) -> Void)? {
+        didSet { delegateBridge.onOpenSessionWithTitle = onOpenSessionWithTitle }
     }
     var isForegroundSuppressed: (@MainActor () -> Bool)? {
         didSet { delegateBridge.isForegroundSuppressed = isForegroundSuppressed }
@@ -90,8 +101,13 @@ final class NotificationDelegateBridge: NSObject, UNUserNotificationCenterDelega
             flushPendingOpenTargetIfPossible()
         }
     }
+    @MainActor var onOpenSessionWithTitle: (@MainActor (_ connectionId: UUID, _ sessionId: String, _ sessionTitle: String?) -> Void)? {
+        didSet {
+            flushPendingOpenTargetIfPossible()
+        }
+    }
     @MainActor var isForegroundSuppressed: (@MainActor () -> Bool)?
-    @MainActor private var pendingOpenTarget: (connectionId: UUID, sessionId: String)?
+    @MainActor private var pendingOpenTarget: (connectionId: UUID, sessionId: String, sessionTitle: String?)?
 
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
@@ -133,33 +149,45 @@ final class NotificationDelegateBridge: NSObject, UNUserNotificationCenterDelega
         runOnMainActor { [weak self] in
             defer { sendableCompletion.value() }
             if let target {
-                self?.deliverOpenSession(connectionId: target.connectionId, sessionId: target.sessionId)
+                self?.deliverOpenSession(
+                    connectionId: target.connectionId,
+                    sessionId: target.sessionId,
+                    sessionTitle: target.sessionTitle
+                )
             }
         }
     }
 
     @MainActor
-    private func deliverOpenSession(connectionId: UUID, sessionId: String) {
-        if let onOpenSession {
+    private func deliverOpenSession(connectionId: UUID, sessionId: String, sessionTitle: String?) {
+        if let onOpenSessionWithTitle {
+            pendingOpenTarget = nil
+            onOpenSessionWithTitle(connectionId, sessionId, sessionTitle)
+        } else if let onOpenSession {
             pendingOpenTarget = nil
             onOpenSession(connectionId, sessionId)
         } else {
             // Buffer taps delivered during cold launch before TurnNotificationCoordinator wires its handler.
-            pendingOpenTarget = (connectionId, sessionId)
+            pendingOpenTarget = (connectionId, sessionId, sessionTitle)
         }
     }
 
     @MainActor
     private func flushPendingOpenTargetIfPossible() {
-        guard let onOpenSession, let target = pendingOpenTarget else { return }
-        pendingOpenTarget = nil
-        onOpenSession(target.connectionId, target.sessionId)
+        guard let target = pendingOpenTarget else { return }
+        if let onOpenSessionWithTitle {
+            pendingOpenTarget = nil
+            onOpenSessionWithTitle(target.connectionId, target.sessionId, target.sessionTitle)
+        } else if let onOpenSession {
+            pendingOpenTarget = nil
+            onOpenSession(target.connectionId, target.sessionId)
+        }
     }
 
     private static func parseOpenSessionTarget(
         actionIdentifier: String,
         userInfo: [AnyHashable: Any]
-    ) -> (connectionId: UUID, sessionId: String)? {
+    ) -> (connectionId: UUID, sessionId: String, sessionTitle: String?)? {
         guard actionIdentifier == UNNotificationDefaultActionIdentifier,
               let rawConnectionId = userInfo["connectionId"] as? String,
               let connectionId = UUID(uuidString: rawConnectionId.trimmingCharacters(in: .whitespacesAndNewlines)),
@@ -171,7 +199,9 @@ final class NotificationDelegateBridge: NSObject, UNUserNotificationCenterDelega
         guard !sessionId.isEmpty else {
             return nil
         }
-        return (connectionId, sessionId)
+        let rawTitle = (userInfo["sessionTitle"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let sessionTitle = (rawTitle?.isEmpty == false) ? rawTitle : nil
+        return (connectionId, sessionId, sessionTitle)
     }
 
     private func runOnMainActor(_ work: @escaping @MainActor () -> Void) {
@@ -266,7 +296,10 @@ final class TurnNotificationCoordinator {
             self?.isAppActive ?? true
         }
         self.notificationManager.onOpenSession = { [weak self] connectionId, sessionId in
-            self?.handleNotificationTap(connectionId: connectionId, sessionId: sessionId)
+            self?.handleNotificationTap(connectionId: connectionId, sessionId: sessionId, sessionTitle: nil)
+        }
+        self.notificationManager.onOpenSessionWithTitle = { [weak self] connectionId, sessionId, sessionTitle in
+            self?.handleNotificationTap(connectionId: connectionId, sessionId: sessionId, sessionTitle: sessionTitle)
         }
 
         storeObserverToken = store.addChangeObserver { [weak self] in
@@ -409,14 +442,17 @@ final class TurnNotificationCoordinator {
         }
     }
 
-    private func handleNotificationTap(connectionId: UUID, sessionId: String) {
+    private func handleNotificationTap(connectionId: UUID, sessionId: String, sessionTitle: String?) {
         clearBadge()
         guard store.connections.first(where: { $0.id == connectionId })?.isEnabled == true,
-              store.client(for: connectionId) != nil
+              let client = store.client(for: connectionId)
         else {
             return
         }
-        router.openThread(connectionId: connectionId, sessionId: sessionId)
+        // Wake the target connection immediately so a suspended or previously failed socket
+        // begins reconnecting before the destination conversation view renders.
+        client.wake()
+        router.openThread(connectionId: connectionId, sessionId: sessionId, titleHint: sessionTitle)
     }
 
     private func clearBadge() {

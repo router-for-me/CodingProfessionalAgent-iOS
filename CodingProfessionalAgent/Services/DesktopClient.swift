@@ -10,6 +10,8 @@ enum ConnectionState: Equatable {
 
 // Native event forwarded from the desktop, with its `data` JSON string already parsed.
 struct DesktopEvent: Sendable {
+    // Synthetic event emitted whenever `DesktopClient.state` changes.
+    static let stateChanged = "client:state-changed"
     // Synthetic event emitted after every (re)connect resynchronization.
     static let synced = "client:synced"
 
@@ -47,7 +49,15 @@ final class DesktopClient: Identifiable {
 
     let id: UUID
     private(set) var connection: DesktopConnection
-    private(set) var state: ConnectionState = .disconnected
+    // True when `state` failed with a non-retriable credential or configuration error.
+    private(set) var isTerminalFailure = false
+    private(set) var state: ConnectionState = .disconnected {
+        didSet {
+            if state != oldValue {
+                emit(DesktopEvent(kind: DesktopEvent.stateChanged, payload: .null))
+            }
+        }
+    }
     private(set) var projects: [RemoteProject] = []
     private(set) var sessions: [RemoteSession] = []
     private(set) var activeRuns: [String: ActiveRun] = [:]
@@ -204,6 +214,7 @@ final class DesktopClient: Identifiable {
         resetTurnOutcomeTracking()
         closeSocket()
         releaseTunnelLease()
+        isTerminalFailure = false
         state = .disconnected
     }
 
@@ -283,6 +294,7 @@ final class DesktopClient: Identifiable {
         reconnectTask?.cancel()
         reconnectTask = nil
         closeSocket()
+        isTerminalFailure = false
         state = .connecting
         // Snapshot endpoint and credentials so a stale attempt never mixes them with newer ones.
         let endpoint = connection
@@ -482,6 +494,7 @@ final class DesktopClient: Identifiable {
             reconnectTask?.cancel()
             reconnectTask = nil
             closeSocket()
+            isTerminalFailure = true
             state = .failed(message)
             return
         }
@@ -600,6 +613,7 @@ final class DesktopClient: Identifiable {
         serverClientId = nil
         failPending(DesktopClientError.notConnected)
         guard shouldRun else {
+            isTerminalFailure = false
             state = .disconnected
             return
         }
@@ -609,10 +623,12 @@ final class DesktopClient: Identifiable {
         }
         if connection.mode == .tunnel, let session = activeTunnelSession {
             if case .failed(let terminalMessage) = session.phase {
+                isTerminalFailure = true
                 state = .failed(terminalMessage)
                 return
             }
             if session.hasReceivedInitialServerList, !session.isServerOnline(connection.tunnelServerUUID) {
+                isTerminalFailure = false
                 state = .failed("远程桌面端不在线")
                 return
             }
@@ -623,19 +639,28 @@ final class DesktopClient: Identifiable {
     private func handleConnectFailure(_ error: Error) {
         if case DesktopClientError.unauthorized = error {
             // A wrong password will not fix itself; wait for the user to edit the connection.
+            isTerminalFailure = true
             state = .failed("密码错误")
             return
         }
+        if case DesktopClientError.invalidAddress = error {
+            isTerminalFailure = true
+            state = .failed("地址无效")
+            return
+        }
         if error is TunnelProtocolError {
+            isTerminalFailure = true
             state = .failed(error.localizedDescription)
             return
         }
         if connection.mode == .tunnel, let session = activeTunnelSession {
             if case .failed(let terminalMessage) = session.phase {
+                isTerminalFailure = true
                 state = .failed(terminalMessage)
                 return
             }
             if session.hasReceivedInitialServerList, !session.isServerOnline(connection.tunnelServerUUID) {
+                isTerminalFailure = false
                 state = .failed("远程桌面端不在线")
                 return
             }
@@ -645,6 +670,7 @@ final class DesktopClient: Identifiable {
 
     private func scheduleReconnect(message: String) {
         retryCount += 1
+        isTerminalFailure = false
         state = retryCount > 2 ? .failed(message) : .connecting
         let delay = min(1.5 * pow(2, Double(min(retryCount - 1, 4))), 20)
         let current = generation
@@ -663,8 +689,9 @@ final class DesktopClient: Identifiable {
         switch message["type"]?.stringValue {
         case "hello":
             serverClientId = message["clientId"]?.stringValue
-            state = .connected
             retryCount = 0
+            isTerminalFailure = false
+            state = .connected
             Task {
                 await resync()
             }

@@ -104,6 +104,7 @@ final class ConnectionStore {
     func setEnabled(_ id: UUID, _ enabled: Bool) {
         guard let index = connections.firstIndex(where: { $0.id == id }) else { return }
         connections[index].isEnabled = enabled
+        clients[id]?.update(connection: connections[index], credentialsChanged: false)
         if enabled {
             clients[id]?.start()
         } else {

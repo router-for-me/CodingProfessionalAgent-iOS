@@ -5,11 +5,12 @@ struct ThreadView: View {
     @Environment(ConnectionStore.self) private var store
     let connectionId: UUID
     let sessionId: String
+    var graceConfiguration: ConnectionGraceConfiguration = .standard
 
     var body: some View {
         if let client = store.client(for: connectionId) {
             // Key by connection and session so replacing a thread route in place never reuses another conversation's state.
-            ThreadContent(client: client, sessionId: sessionId)
+            ThreadContent(client: client, sessionId: sessionId, graceConfiguration: graceConfiguration)
                 .id("\(client.id.uuidString)/\(sessionId)")
         } else {
             ContentUnavailableView(
@@ -18,6 +19,29 @@ struct ThreadView: View {
                 description: Text("该桌面端连接已被删除。")
             )
         }
+    }
+
+    @MainActor
+    static func resolvedTitle(model: ThreadModel, router: Router) -> String {
+        if let session = model.session {
+            return session.title.isEmpty ? "新对话" : session.title
+        }
+        if let hint = router.sessionTitleHint(connectionId: model.client.id, sessionId: model.sessionId) {
+            return hint
+        }
+        return (model.isWaitingForConnection || model.isLoading) ? "对话" : "新对话"
+    }
+
+    @MainActor
+    static func resolvedComposerPlaceholder(model: ThreadModel) -> String {
+        let client = model.client
+        if client.isConnected {
+            return "在 \(client.connection.displayName) 上工作"
+        }
+        if model.isWaitingForConnection || client.state == .connecting {
+            return "正在连接 \(client.connection.displayName)…"
+        }
+        return "桌面端未连接"
     }
 }
 
@@ -63,8 +87,16 @@ private struct ThreadContent: View {
     @AppStorage(PreferenceKey.followUpMode) private var followUpMode = FollowUpMode.queue
     @AppStorage(PreferenceKey.wrapDiffLines) private var wrapDiffLines = true
 
-    init(client: DesktopClient, sessionId: String) {
-        _model = State(initialValue: ThreadModel(client: client, sessionId: sessionId))
+    init(
+        client: DesktopClient,
+        sessionId: String,
+        graceConfiguration: ConnectionGraceConfiguration = .standard
+    ) {
+        _model = State(initialValue: ThreadModel(
+            client: client,
+            sessionId: sessionId,
+            graceConfiguration: graceConfiguration
+        ))
     }
 
     private var client: DesktopClient {
@@ -77,8 +109,11 @@ private struct ThreadContent: View {
     }
 
     private var title: String {
-        let title = model.session?.title ?? ""
-        return title.isEmpty ? "新对话" : title
+        ThreadView.resolvedTitle(model: model, router: router)
+    }
+
+    private var composerPlaceholder: String {
+        ThreadView.resolvedComposerPlaceholder(model: model)
     }
 
     private var subtitle: String {
@@ -225,7 +260,7 @@ private struct ThreadContent: View {
                         draft: $draft,
                         attachments: $attachments,
                         isFocused: $isPromptFocused,
-                        placeholder: client.isConnected ? "在 \(client.connection.displayName) 上工作" : "桌面端未连接",
+                        placeholder: composerPlaceholder,
                         isSending: attachmentSends > 0,
                         isRunning: model.isRunning,
                         canResume: model.canResume,
@@ -348,6 +383,7 @@ private struct ThreadContent: View {
             panelTab = nil
             showsRename = false
             errorMessage = nil
+            model.handleExternalNavigation()
         }
         .sheet(isPresented: $showsModelSheet, onDismiss: applyModelSheet) {
             AdvancedSettingsSheet(
@@ -524,10 +560,31 @@ private struct ThreadContent: View {
         if model.isDeleted {
             ContentUnavailableView("对话已删除", systemImage: "trash", description: Text("该对话已在桌面端被删除。"))
         } else if visibleEntries.isEmpty {
-            if let error = model.loadError {
-                ContentUnavailableView("加载失败", systemImage: "exclamationmark.triangle", description: Text(error))
-            } else if model.isLoading && client.isConnected {
-                ProgressView()
+            if let error = model.connectionError {
+                ThreadStatusPlaceholder(
+                    systemImage: "bolt.horizontal.circle",
+                    title: "无法连接到桌面端",
+                    message: ThreadStatusPlaceholder.connectionMessage(error, desktopName: client.connection.displayName),
+                    actionTitle: client.connection.isEnabled ? "重试" : nil,
+                    action: { model.retryConnection() }
+                )
+                .transition(.opacity)
+            } else if let error = model.loadError {
+                ThreadStatusPlaceholder(
+                    systemImage: "exclamationmark.triangle",
+                    title: "加载失败",
+                    message: error,
+                    actionTitle: "重试",
+                    action: { model.refresh() }
+                )
+                .transition(.opacity)
+            } else if model.isWaitingForConnection || model.isLoading {
+                ConversationLoadingView(
+                    icon: client.connection.icon,
+                    desktopName: client.connection.displayName,
+                    isConnected: client.isConnected
+                )
+                .transition(.opacity)
             }
         }
     }
@@ -1017,5 +1074,129 @@ private struct AskBanner: View {
             .glassEffect(.regular, in: .capsule)
         }
         .buttonStyle(.plain)
+    }
+}
+
+// Centered loading indicator matching the app's coral accent, device iconography, and text shimmer.
+struct ConversationLoadingView: View {
+    let icon: ConnectionIcon
+    let desktopName: String
+    let isConnected: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    static func statusTitle(isConnected: Bool, desktopName: String) -> String {
+        isConnected ? "正在加载对话…" : "正在连接 \(desktopName)…"
+    }
+
+    static func statusDetail(isConnected: Bool) -> String {
+        isConnected ? "正在同步最新消息记录" : "连接建立后将自动显示会话内容"
+    }
+
+    private var statusTitle: String {
+        Self.statusTitle(isConnected: isConnected, desktopName: desktopName)
+    }
+
+    private var statusDetail: String {
+        Self.statusDetail(isConnected: isConnected)
+    }
+
+    var body: some View {
+        VStack(spacing: 16) {
+            emblem
+            VStack(spacing: 5) {
+                Text(statusTitle)
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .modifier(Shimmer(isActive: true))
+                Text(statusDetail)
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+            }
+            .multilineTextAlignment(.center)
+        }
+        .padding(.horizontal, 32)
+        .animation(.easeInOut(duration: 0.2), value: isConnected)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(statusTitle)，\(statusDetail)")
+    }
+
+    @ViewBuilder
+    private var emblem: some View {
+        let ringStyle = StrokeStyle(lineWidth: 2, lineCap: .round)
+        ZStack {
+            Circle()
+                .fill(Theme.userBubble)
+                .frame(width: 56, height: 56)
+
+            Circle()
+                .stroke(Theme.accent.opacity(0.18), lineWidth: 2)
+                .frame(width: 56, height: 56)
+
+            if reduceMotion {
+                Circle()
+                    .trim(from: 0, to: 0.28)
+                    .stroke(Theme.accent, style: ringStyle)
+                    .rotationEffect(.degrees(-90))
+                    .frame(width: 56, height: 56)
+            } else {
+                TimelineView(.animation(minimumInterval: 1 / 60)) { context in
+                    let period = 1.15
+                    let angle = (context.date.timeIntervalSinceReferenceDate
+                        .truncatingRemainder(dividingBy: period) / period) * 360
+                    Circle()
+                        .trim(from: 0, to: 0.28)
+                        .stroke(Theme.accent, style: ringStyle)
+                        .rotationEffect(.degrees(angle - 90))
+                        .frame(width: 56, height: 56)
+                }
+            }
+
+            ConnectionIconImage(icon: icon, color: Theme.accent)
+                .font(.system(size: 22, weight: .medium))
+        }
+        .accessibilityHidden(true)
+    }
+}
+
+// Connection or load failure placeholder styled consistently with the home screen's empty states.
+struct ThreadStatusPlaceholder: View {
+    let systemImage: String
+    let title: String
+    let message: String
+    var actionTitle: String? = nil
+    var action: (() -> Void)? = nil
+
+    static func connectionMessage(_ rawError: String, desktopName: String) -> String {
+        let trimmed = rawError.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty || trimmed == "桌面端未连接" || trimmed == "无法连接到桌面端" {
+            return "未能连接到 \(desktopName)，请确认桌面端正在运行且网络连接正常。"
+        }
+        if trimmed.contains(desktopName) {
+            return trimmed
+        }
+        return "\(desktopName)：\(trimmed)"
+    }
+
+    var body: some View {
+        VStack(spacing: 14) {
+            Image(systemName: systemImage)
+                .font(.system(size: 40, weight: .light))
+                .symbolRenderingMode(.palette)
+                .foregroundStyle(Color.secondary, Color.clear)
+            Text(title)
+                .font(.system(size: 20, weight: .semibold))
+            Text(message)
+                .font(.system(size: 15))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            if let actionTitle, let action {
+                Button(actionTitle, action: action)
+                    .buttonStyle(.glassProminent)
+                    .tint(Theme.accent)
+                    .padding(.top, 6)
+            }
+        }
+        .padding(.horizontal, 40)
+        .frame(maxWidth: .infinity)
     }
 }

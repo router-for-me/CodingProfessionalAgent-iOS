@@ -194,7 +194,7 @@ final class TunnelSession: Identifiable {
                 if error != nil {
                     Task { @MainActor [weak self] in
                         guard let self, !self.isDisposed, self.epoch == currentEpoch else { return }
-                        self.dial()
+                        self.retryNow()
                     }
                 } else {
                     Task { @MainActor [weak self] in

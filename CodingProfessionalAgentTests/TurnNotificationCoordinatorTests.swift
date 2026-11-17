@@ -769,13 +769,70 @@ final class TurnNotificationCoordinatorTests: XCTestCase {
         }
         XCTAssertTrue(completionRan)
 
-        var opened: [(UUID, String)] = []
-        bridge.onOpenSession = { cid, sid in
-            opened.append((cid, sid))
+        var opened: [(UUID, String, String?)] = []
+        bridge.onOpenSessionWithTitle = { cid, sid, title in
+            opened.append((cid, sid, title))
         }
         XCTAssertEqual(opened.count, 1)
         XCTAssertEqual(opened.first?.0, connectionId)
         XCTAssertEqual(opened.first?.1, "sess-cold-launch")
+        XCTAssertNil(opened.first?.2)
+    }
+
+    func testNotificationTapPassesSessionTitleHintAndImmediatelyWakesDisconnectedClient() async throws {
+        let server = try MockNotificationRPCServer()
+        server.rejectConnections = true
+        defer { server.stop() }
+
+        let store = ConnectionStore(defaults: defaults, persistsCredentials: false)
+        let conn = makeConnection(name: "Studio", host: "127.0.0.1", port: Int(server.port))
+        store.add(conn, password: "")
+        let client = try XCTUnwrap(store.client(for: conn.id))
+        defer { client.stop() }
+
+        // Stop client to simulate a socket that is currently disconnected before the notification tap arrives.
+        client.stop()
+        client.start()
+        try await Task.sleep(for: .milliseconds(60))
+        XCTAssertNotEqual(client.state, .connected)
+
+        let bridge = NotificationDelegateBridge()
+        let center = UNUserNotificationCenter.current()
+        let manager = SystemUserNotificationManager(center: center, delegateBridge: bridge)
+        let router = Router()
+        let coordinator = TurnNotificationCoordinator(
+            store: store,
+            router: router,
+            defaults: defaults,
+            notificationManager: manager,
+            remoteRegistrar: MockRemoteNotificationRegistrar(),
+            initialActive: false
+        )
+        _ = coordinator
+
+        // Bring the desktop back online right before the user taps the system notification.
+        server.rejectConnections = false
+        var didComplete = false
+        bridge.handleDidReceive(
+            actionIdentifier: UNNotificationDefaultActionIdentifier,
+            userInfo: [
+                "connectionId": conn.id.uuidString,
+                "sessionId": "sess-wake-42",
+                "sessionTitle": "  修复通知跳转加载体验  ",
+            ]
+        ) {
+            MainActor.assumeIsolated {
+                didComplete = true
+            }
+        }
+        XCTAssertTrue(didComplete)
+        XCTAssertEqual(router.path, [.thread(connectionId: conn.id, sessionId: "sess-wake-42")])
+        XCTAssertEqual(router.sessionTitleHint(connectionId: conn.id, sessionId: "sess-wake-42"), "修复通知跳转加载体验")
+
+        // Even before scenePhase flips to active, handleNotificationTap wakes the client immediately.
+        try await waitUntil("client woken and connected on notification tap", timeout: 2.0) {
+            client.state == .connected && client.hasSynced
+        }
     }
 
     private func waitUntil(_ label: String, timeout: Double = 3.0, condition: () -> Bool) async throws {
@@ -793,6 +850,7 @@ final class TurnNotificationCoordinatorTests: XCTestCase {
 @MainActor
 private final class MockUserNotificationManager: UserNotificationManaging {
     var onOpenSession: (@MainActor (_ connectionId: UUID, _ sessionId: String) -> Void)?
+    var onOpenSessionWithTitle: (@MainActor (_ connectionId: UUID, _ sessionId: String, _ sessionTitle: String?) -> Void)?
     var isForegroundSuppressed: (@MainActor () -> Bool)?
     var shouldGrantAuthorization = true
     var currentAuthorizationGranted = false
@@ -836,6 +894,7 @@ private final class MockNotificationRPCServer: @unchecked Sendable {
     private var _recordedNotificationRPCs: [RecordedRPC] = []
     private var _returnMethodNotFoundError = false
     private var _hangNotificationRPCs = false
+    private var _rejectConnections = false
     private(set) var port: UInt16 = 0
 
     var recordedNotificationRPCs: [RecordedRPC] {
@@ -850,6 +909,11 @@ private final class MockNotificationRPCServer: @unchecked Sendable {
     var hangNotificationRPCs: Bool {
         get { lock.withLock { _hangNotificationRPCs } }
         set { lock.withLock { _hangNotificationRPCs = newValue } }
+    }
+
+    var rejectConnections: Bool {
+        get { lock.withLock { _rejectConnections } }
+        set { lock.withLock { _rejectConnections = newValue } }
     }
 
     init() throws {
@@ -881,6 +945,10 @@ private final class MockNotificationRPCServer: @unchecked Sendable {
     }
 
     private func handleConnection(_ conn: NWConnection) {
+        if rejectConnections {
+            conn.forceCancel()
+            return
+        }
         conn.start(queue: queue)
         readHTTPHeader(conn: conn, accumulated: Data())
     }

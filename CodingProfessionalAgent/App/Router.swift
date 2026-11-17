@@ -27,6 +27,7 @@ enum Route: Hashable {
 final class Router {
     var path: [Route] = []
     private(set) var externalNavigationRevision = 0
+    private var sessionTitleHints: [String: String] = [:]
 
     func push(_ route: Route) {
         path.append(route)
@@ -42,7 +43,10 @@ final class Router {
     }
 
     // Navigates directly to a conversation from an external trigger such as a notification tap.
-    func openThread(connectionId: UUID, sessionId: String) {
+    func openThread(connectionId: UUID, sessionId: String, titleHint: String? = nil) {
+        if let trimmed = titleHint?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty {
+            sessionTitleHints["\(connectionId.uuidString)/\(sessionId)"] = trimmed
+        }
         externalNavigationRevision += 1
         let destination = Route.thread(connectionId: connectionId, sessionId: sessionId)
         if path != [destination] {
@@ -52,6 +56,10 @@ final class Router {
                 path = [destination]
             }
         }
+    }
+
+    func sessionTitleHint(connectionId: UUID, sessionId: String) -> String? {
+        sessionTitleHints["\(connectionId.uuidString)/\(sessionId)"]
     }
 }
 

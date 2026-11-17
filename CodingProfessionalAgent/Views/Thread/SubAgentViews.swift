@@ -285,6 +285,7 @@ private struct SubAgentContent: View {
         }
         .onChange(of: router.externalNavigationRevision) { _, _ in
             forkError = nil
+            model.handleExternalNavigation()
         }
     }
 
@@ -302,7 +303,7 @@ private struct SubAgentContent: View {
         }
     }
 
-    // "运行中 12s · GPT-5 · 高 ⚡︎", like the desktop sub-agent list row and conversation header.
+    // Formats "<status> 12s · GPT-5 · High ⚡︎", matching the desktop sub-agent list row and conversation header.
     private func subtitle(now: Double) -> some View {
         var parts: [String] = []
         if let record {
@@ -332,10 +333,28 @@ private struct SubAgentContent: View {
     @ViewBuilder
     private var placeholder: some View {
         if model.entries.isEmpty {
-            if let error = model.loadError {
-                ContentUnavailableView("加载失败", systemImage: "exclamationmark.triangle", description: Text(error))
-            } else if model.isLoading && client.isConnected {
-                ProgressView()
+            if let error = model.connectionError {
+                ThreadStatusPlaceholder(
+                    systemImage: "bolt.horizontal.circle",
+                    title: "无法连接到桌面端",
+                    message: ThreadStatusPlaceholder.connectionMessage(error, desktopName: client.connection.displayName),
+                    actionTitle: client.connection.isEnabled ? "重试" : nil,
+                    action: { model.retryConnection() }
+                )
+            } else if let error = model.loadError {
+                ThreadStatusPlaceholder(
+                    systemImage: "exclamationmark.triangle",
+                    title: "加载失败",
+                    message: error,
+                    actionTitle: "重试",
+                    action: { model.refresh() }
+                )
+            } else if model.isWaitingForConnection || model.isLoading {
+                ConversationLoadingView(
+                    icon: client.connection.icon,
+                    desktopName: client.connection.displayName,
+                    isConnected: client.isConnected
+                )
             } else if !model.isRunning {
                 Text("暂无消息")
                     .font(.system(size: 13))

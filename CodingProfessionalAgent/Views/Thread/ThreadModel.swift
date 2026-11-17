@@ -13,6 +13,16 @@ struct FailedEdit: Identifiable, Equatable {
     let entry: ConversationEntry
 }
 
+// Timing parameters for waiting on a waking or reconnecting desktop before showing an offline error.
+struct ConnectionGraceConfiguration: Sendable {
+    var failureGrace: Duration = .seconds(6)
+    var connectingTimeout: Duration = .seconds(10)
+    var retryInterval: Duration = .seconds(2.5)
+    var pollInterval: Duration = .milliseconds(100)
+
+    static let standard = ConnectionGraceConfiguration()
+}
+
 // Live state of one conversation: the persisted entries plus streamed updates from the desktop.
 @MainActor
 @Observable
@@ -25,6 +35,8 @@ final class ThreadModel {
     // Latest live details of running tools by normalized call id, e.g. nested calls of a code mode cell.
     private(set) var toolDetails: [String: JSONValue] = [:]
     private(set) var isLoading = true
+    private(set) var isWaitingForConnection = false
+    private(set) var connectionError: String?
     private(set) var loadError: String?
     private(set) var runningToolCallIds: Set<String> = []
     private(set) var lastRunError: String?
@@ -37,11 +49,16 @@ final class ThreadModel {
     private static let restartStreamingError = "Response stream ended prematurely before completion"
     private static let interruptedByRestartError = "Interrupted by session restart"
 
+    @ObservationIgnored private let graceConfig: ConnectionGraceConfiguration
     @ObservationIgnored private var listenerToken: UUID?
-    @ObservationIgnored private var reloadTask: Task<Void, Never>?
+    @ObservationIgnored private var reloadDebounceTask: Task<Void, Never>?
+    @ObservationIgnored private var reloadExecutionTask: Task<Void, Never>?
     @ObservationIgnored private var isReloading = false
     @ObservationIgnored private var reloadRequested = false
     @ObservationIgnored private var pendingAuthoritativeReload = false
+    @ObservationIgnored private var hasLoadedEntries = false
+    @ObservationIgnored private var graceTask: Task<Void, Never>?
+    @ObservationIgnored private var graceStartTime: ContinuousClock.Instant?
     // Entries added locally or from the stream that the desktop has not persisted yet.
     @ObservationIgnored private var unpersistedIds: Set<String> = []
     // Discarded partial assistant entries removed when resuming, hidden until the desktop snapshot drops them.
@@ -87,10 +104,28 @@ final class ThreadModel {
     // snapshots (e.g. its outcome was missed), which show the desktop's history as it is.
     private static let pendingEditTimeout: Duration = .seconds(20)
 
-    init(client: DesktopClient, sessionId: String, subAgent: SubAgentReference? = nil) {
+    init(
+        client: DesktopClient,
+        sessionId: String,
+        subAgent: SubAgentReference? = nil,
+        graceConfiguration: ConnectionGraceConfiguration = .standard
+    ) {
         self.client = client
         self.sessionId = sessionId
         self.subAgent = subAgent
+        self.graceConfig = graceConfiguration
+        if !client.isConnected {
+            if !client.connection.isEnabled {
+                isLoading = false
+                connectionError = "桌面端连接已关闭"
+            } else if client.isTerminalFailure, case .failed(let message) = client.state {
+                isLoading = false
+                connectionError = message
+            } else {
+                isWaitingForConnection = true
+                isLoading = true
+            }
+        }
     }
 
     var session: RemoteSession? {
@@ -208,7 +243,11 @@ final class ThreadModel {
             self?.handle(event)
         }
         subAgentWasRunning = isRunning
-        scheduleReload(delay: 0, authoritative: true)
+        if !hasLoadedEntries {
+            beginConnectionOrReload(wakeIfNeeded: true)
+        } else {
+            scheduleReload(delay: 0, authoritative: true)
+        }
         // Questions are only asked by top-level runs.
         if subAgent == nil {
             startAskMonitor()
@@ -220,7 +259,11 @@ final class ThreadModel {
             client.removeListener(listenerToken)
         }
         listenerToken = nil
-        reloadTask?.cancel()
+        cancelGraceWindow()
+        reloadDebounceTask?.cancel()
+        reloadDebounceTask = nil
+        reloadExecutionTask?.cancel()
+        reloadExecutionTask = nil
         askMonitorTask?.cancel()
         askMonitorTask = nil
         stopAskPolling()
@@ -289,7 +332,8 @@ final class ThreadModel {
         lastRunError = nil
         failedEdit = nil
         // Shown at once, since the desktop may report the run before the request returns.
-        reloadTask?.cancel()
+        reloadDebounceTask?.cancel()
+        reloadExecutionTask?.cancel()
         pendingEdit = PendingEdit(
             entry: entries[index].replacingText(text, skillReferences: skillReferences, createdAt: now),
             // An earlier edit may still be pending, with entries a snapshot can bring back.
@@ -341,7 +385,8 @@ final class ThreadModel {
         let previousRemoved = removedEntryIds
         let previousStopped = wasStopped
         wasStopped = false
-        reloadTask?.cancel()
+        reloadDebounceTask?.cancel()
+        reloadExecutionTask?.cancel()
         prepareEntriesForResume()
         do {
             try await client.resumeSession(id: sessionId)
@@ -355,7 +400,35 @@ final class ThreadModel {
     }
 
     func refresh() {
+        if !client.isConnected && !hasLoadedEntries {
+            retryConnection()
+            return
+        }
+        loadError = nil
+        if !hasLoadedEntries {
+            isLoading = true
+        }
         scheduleReload(delay: 0, authoritative: true)
+    }
+
+    func retryConnection() {
+        cancelGraceWindow()
+        graceStartTime = ContinuousClock.now
+        connectionError = nil
+        loadError = nil
+        beginConnectionOrReload(wakeIfNeeded: true)
+    }
+
+    func handleExternalNavigation() {
+        guard !hasLoadedEntries else {
+            if client.isConnected {
+                scheduleReload(delay: 0, authoritative: true)
+            } else if client.connection.isEnabled {
+                client.wake()
+            }
+            return
+        }
+        retryConnection()
     }
 
     func answerAsk(_ decision: AskDecision) async throws {
@@ -383,36 +456,217 @@ final class ThreadModel {
 
     // MARK: - Loading
 
+    private func beginConnectionOrReload(wakeIfNeeded: Bool) {
+        guard client.connection.isEnabled else {
+            finishGraceWithConnectionError("桌面端连接已关闭")
+            return
+        }
+        if client.isConnected {
+            cancelGraceWindow()
+            isWaitingForConnection = false
+            connectionError = nil
+            loadError = nil
+            if !hasLoadedEntries {
+                isLoading = true
+            }
+            scheduleReload(delay: 0, authoritative: true)
+            return
+        }
+        if client.isTerminalFailure, case .failed(let message) = client.state {
+            finishGraceWithConnectionError(message)
+            return
+        }
+        if wakeIfNeeded {
+            client.wake()
+            if client.isConnected {
+                cancelGraceWindow()
+                isWaitingForConnection = false
+                connectionError = nil
+                loadError = nil
+                if !hasLoadedEntries {
+                    isLoading = true
+                }
+                scheduleReload(delay: 0, authoritative: true)
+                return
+            }
+            if client.isTerminalFailure, case .failed(let message) = client.state {
+                finishGraceWithConnectionError(message)
+                return
+            }
+        }
+        startGraceWindow(resetClock: graceStartTime == nil)
+    }
+
+    private func startGraceWindow(resetClock: Bool) {
+        let clock = ContinuousClock()
+        if resetClock || graceStartTime == nil {
+            graceStartTime = clock.now
+        }
+        connectionError = nil
+        loadError = nil
+        isWaitingForConnection = true
+        isLoading = true
+        guard graceTask == nil else { return }
+        let pollInterval = graceConfig.pollInterval
+        graceTask = Task { [weak self] in
+            guard let self else { return }
+            var lastWakeAttempt = clock.now
+            while !Task.isCancelled {
+                try? await Task.sleep(for: pollInterval)
+                guard !Task.isCancelled, self.isActive, !self.hasLoadedEntries else { return }
+                if self.client.isConnected {
+                    self.beginConnectionOrReload(wakeIfNeeded: false)
+                    return
+                }
+                if !self.client.connection.isEnabled {
+                    self.finishGraceWithConnectionError("桌面端连接已关闭")
+                    return
+                }
+                if self.client.isTerminalFailure, case .failed(let message) = self.client.state {
+                    self.finishGraceWithConnectionError(message)
+                    return
+                }
+                let start = self.graceStartTime ?? clock.now
+                let elapsed = clock.now - start
+                switch self.client.state {
+                case .failed(let message):
+                    if elapsed >= self.graceConfig.failureGrace {
+                        self.finishGraceWithConnectionError(message)
+                        return
+                    }
+                    if clock.now - lastWakeAttempt >= self.graceConfig.retryInterval {
+                        lastWakeAttempt = clock.now
+                        self.client.wake()
+                    }
+                case .connecting, .disconnected:
+                    if elapsed >= self.graceConfig.connectingTimeout {
+                        self.finishGraceWithConnectionError("连接超时，请确认桌面端正在运行且网络连接正常。")
+                        return
+                    }
+                    if clock.now - lastWakeAttempt >= self.graceConfig.retryInterval {
+                        lastWakeAttempt = clock.now
+                        self.client.wake()
+                    }
+                case .connected:
+                    self.beginConnectionOrReload(wakeIfNeeded: false)
+                    return
+                }
+            }
+        }
+    }
+
+    private func cancelGraceWindow() {
+        graceTask?.cancel()
+        graceTask = nil
+    }
+
+    private func finishGraceWithConnectionError(_ message: String) {
+        cancelGraceWindow()
+        isWaitingForConnection = false
+        isLoading = false
+        loadError = nil
+        connectionError = message
+    }
+
+    private func handleClientStateChange() {
+        if client.isConnected {
+            cancelGraceWindow()
+            isWaitingForConnection = false
+            connectionError = nil
+            loadError = nil
+            if !hasLoadedEntries {
+                isLoading = true
+            }
+            scheduleReload(delay: 0, authoritative: true)
+            return
+        }
+        guard !hasLoadedEntries else { return }
+        if !client.connection.isEnabled {
+            finishGraceWithConnectionError("桌面端连接已关闭")
+            return
+        }
+        if client.isTerminalFailure, case .failed(let message) = client.state {
+            finishGraceWithConnectionError(message)
+            return
+        }
+        if case .failed(let message) = client.state {
+            if let start = graceStartTime, ContinuousClock.now - start >= graceConfig.failureGrace {
+                finishGraceWithConnectionError(message)
+            } else if connectionError == nil {
+                startGraceWindow(resetClock: false)
+            }
+            return
+        }
+        if connectionError == nil {
+            startGraceWindow(resetClock: false)
+        }
+    }
+
+    private static func isConnectionTransportError(_ error: Error) -> Bool {
+        if let clientError = error as? DesktopClientError {
+            switch clientError {
+            case .notConnected, .timeout:
+                return true
+            case .remote(let message):
+                return message == "远程桌面端不在线" || message == "远程桌面端已离线"
+            case .invalidAddress, .unauthorized, .http:
+                return false
+            }
+        }
+        if error is URLError {
+            return true
+        }
+        let nsError = error as NSError
+        return nsError.domain == NSURLErrorDomain || nsError.domain == NSPOSIXErrorDomain
+    }
+
     private func scheduleReload(delay: Double = 0.3, authoritative: Bool) {
         pendingAuthoritativeReload = pendingAuthoritativeReload || authoritative
-        reloadTask?.cancel()
-        reloadTask = Task { [weak self] in
-            if delay > 0 {
-                try? await Task.sleep(for: .seconds(delay))
-            }
+        reloadDebounceTask?.cancel()
+        if delay <= 0 {
+            reloadDebounceTask = nil
+            startReloadExecution()
+            return
+        }
+        reloadDebounceTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
             guard let self, !Task.isCancelled else { return }
-            await performReloads()
+            self.startReloadExecution()
+        }
+    }
+
+    private func startReloadExecution() {
+        reloadRequested = true
+        guard !isReloading else { return }
+        reloadExecutionTask = Task { [weak self] in
+            await self?.performReloads()
         }
     }
 
     // Serializes reloads so an older snapshot never lands after a newer one.
     private func performReloads() async {
-        reloadRequested = true
         guard !isReloading else { return }
         isReloading = true
-        while reloadRequested {
+        defer { isReloading = false }
+        while reloadRequested && !Task.isCancelled {
             reloadRequested = false
             let authoritative = pendingAuthoritativeReload
             pendingAuthoritativeReload = false
             await reload(authoritative: authoritative)
         }
-        isReloading = false
     }
 
     private func reload(authoritative: Bool) async {
         guard client.isConnected else {
-            isLoading = false
+            if !hasLoadedEntries {
+                beginConnectionOrReload(wakeIfNeeded: false)
+            } else {
+                isLoading = false
+            }
             return
+        }
+        if !hasLoadedEntries {
+            isLoading = true
         }
         updatedDuringReload = []
         do {
@@ -443,10 +697,24 @@ final class ThreadModel {
                 pendingEdit = nil
             }
             applyPendingEdit()
+            hasLoadedEntries = true
+            connectionError = nil
             loadError = nil
+            isWaitingForConnection = false
+            cancelGraceWindow()
             pruneFinishedTools()
         } catch {
             updatedDuringReload = nil
+            if Task.isCancelled {
+                return
+            }
+            if !hasLoadedEntries && (!client.isConnected || Self.isConnectionTransportError(error)) {
+                if client.isConnected {
+                    client.wake()
+                }
+                startGraceWindow(resetClock: false)
+                return
+            }
             if entries.isEmpty {
                 loadError = error.localizedDescription
             }
@@ -512,6 +780,8 @@ final class ThreadModel {
             guard eventSessionId == sessionId else { return }
             askLookupSequence += 1
             askRequest = try? event.payload["request"]?.decode(AskRequest.self)
+        case DesktopEvent.stateChanged:
+            handleClientStateChange()
         case DesktopEvent.synced:
             scheduleReload(delay: 0, authoritative: true)
         default:
@@ -628,6 +898,12 @@ final class ThreadModel {
             entries[index] = entry
         } else {
             entries.append(entry)
+        }
+        if entry.kind == .user || entry.kind == .assistant || entry.kind == .compaction {
+            connectionError = nil
+            loadError = nil
+            isWaitingForConnection = false
+            cancelGraceWindow()
         }
     }
 
