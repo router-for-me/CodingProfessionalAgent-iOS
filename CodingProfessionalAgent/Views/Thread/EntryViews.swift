@@ -58,7 +58,7 @@ struct UserBubble: View {
                 }
 
                 if let pending = entry.pendingStatus {
-                    Text(pending == FollowUpMode.steer.rawValue ? L10n.Entry.steering : L10n.Entry.queued)
+                    Text((FollowUpStatus(rawValue: pending) ?? .pending).title)
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                 }

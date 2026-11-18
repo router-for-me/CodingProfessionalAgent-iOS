@@ -87,7 +87,6 @@ private struct ThreadContent: View {
     @State private var followRequests = 0
     @AppStorage(PreferenceKey.collapseKeyboardAfterSend) private var collapseKeyboardAfterSend = true
     @AppStorage(PreferenceKey.showContextUsage) private var showContextUsage = false
-    @AppStorage(PreferenceKey.followUpMode) private var followUpMode = FollowUpMode.queue
     @AppStorage(PreferenceKey.wrapDiffLines) private var wrapDiffLines = true
 
     init(
@@ -655,8 +654,7 @@ private struct ThreadContent: View {
                 try await model.send(
                     ComposerAttachments.promptText(payload.text, filePaths: filePaths),
                     skillReferences: payload.references,
-                    images: images,
-                    followUpMode: followUpMode
+                    images: images
                 )
             } catch {
                 // The text is restored unless something new was typed meanwhile; attachments are put back first.

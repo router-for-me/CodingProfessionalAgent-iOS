@@ -262,6 +262,7 @@ enum L10n {
         static var collapseKeyboardAfterSend: String { L10n.string("settings.collapseKeyboardAfterSend") }
         static var showContextUsage: String { L10n.string("settings.showContextUsage") }
         static var followUpMode: String { L10n.string("settings.followUpMode") }
+        static var followUpDesktop: String { L10n.string("settings.followUpDesktop") }
         static var behavior: String { L10n.string("settings.behavior") }
         static var notifyOnTurnComplete: String { L10n.string("settings.notifyOnTurnComplete") }
         static var wrapDiffLines: String { L10n.string("settings.wrapDiffLines") }
@@ -621,6 +622,7 @@ enum L10n {
 
     enum Entry {
         static var compacted: String { L10n.string("entry.compacted") }
+        static var followUpPending: String { L10n.string("entry.followUpPending") }
         static var steering: String { L10n.string("entry.steering") }
         static var queued: String { L10n.string("entry.queued") }
         static var copy: String { L10n.string("entry.copy") }
@@ -643,8 +645,6 @@ enum L10n {
         static var speedFast: String { L10n.string("model.speed.fast") }
         static var workLocationLocal: String { L10n.string("model.workLocation.local") }
         static var workLocationWorktree: String { L10n.string("model.workLocation.worktree") }
-        static var followUpQueue: String { L10n.string("model.followUp.queue") }
-        static var followUpSteer: String { L10n.string("model.followUp.steer") }
         static var liveActivityPerComputer: String { L10n.string("model.liveActivity.perComputer") }
         static var liveActivityPerTask: String { L10n.string("model.liveActivity.perTask") }
         static var liveActivityOff: String { L10n.string("model.liveActivity.off") }

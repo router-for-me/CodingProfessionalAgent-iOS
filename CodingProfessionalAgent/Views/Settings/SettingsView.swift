@@ -12,7 +12,6 @@ struct SettingsView: View {
     @State private var showsTunnelSheet = false
     @AppStorage(PreferenceKey.collapseKeyboardAfterSend) private var collapseKeyboardAfterSend = true
     @AppStorage(PreferenceKey.showContextUsage) private var showContextUsage = false
-    @AppStorage(PreferenceKey.followUpMode) private var followUpMode = FollowUpMode.queue
     @AppStorage(PreferenceKey.wrapDiffLines) private var wrapDiffLines = true
     @AppStorage(PreferenceKey.notifyOnTurnComplete) private var notifyOnTurnComplete = true
     @AppStorage(PreferenceKey.liveActivityMode) private var liveActivityMode = LiveActivityMode.perComputer
@@ -59,14 +58,7 @@ struct SettingsView: View {
                 Section {
                     Toggle(L10n.Settings.collapseKeyboardAfterSend, isOn: $collapseKeyboardAfterSend)
                     Toggle(L10n.Settings.showContextUsage, isOn: $showContextUsage)
-                    Picker(L10n.Settings.followUpMode, selection: $followUpMode) {
-                        ForEach(FollowUpMode.allCases) { mode in
-                            Text(mode.title).tag(mode)
-                        }
-                    }
-                    .id("followUp-\(locale.identifier)-\(localization.revision)")
-                    .pickerStyle(.menu)
-                    .tint(Color.secondary)
+                    LabeledContent(L10n.Settings.followUpMode, value: L10n.Settings.followUpDesktop)
                 } header: {
                     sectionTitle(L10n.Settings.composer)
                 }

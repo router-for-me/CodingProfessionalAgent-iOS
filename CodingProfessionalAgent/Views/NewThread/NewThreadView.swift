@@ -392,8 +392,7 @@ struct NewThreadView: View {
                     userEntryId: entryId,
                     userEntryCreatedAt: createdAt,
                     skillReferences: payload.references,
-                    images: await sentAttachments.promptImages(),
-                    followUpMode: nil
+                    images: await sentAttachments.promptImages()
                 ))
                 router.replaceTop(with: .thread(connectionId: client.id, sessionId: sessionId))
             } catch {

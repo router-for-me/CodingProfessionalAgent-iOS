@@ -262,7 +262,7 @@ struct ConversationEntry: Decodable, Identifiable, Hashable, Sendable {
     let isError: Bool
     var interrupted: Bool
     let summary: String?
-    let pendingStatus: String?
+    var pendingStatus: String?
     // Skill chips of a user prompt; nil for older entries that predate references.
     var skillReferences: [SkillReference]?
     // When an assistant message finished, in epoch milliseconds.
@@ -677,7 +677,6 @@ struct DelegateRunRequest: Sendable {
     var userEntryCreatedAt: Double
     var skillReferences: [SkillReference] = []
     var images: [PromptImage] = []
-    var followUpMode: String?
     // Resends this earlier user entry with the new text; the desktop drops everything after it.
     var editMessageId: String?
     // The desktop skips request ids it already ran, so edits pass a fresh one.
@@ -707,9 +706,6 @@ struct DelegateRunRequest: Sendable {
         // Omitted without images, like the desktop composer.
         if !images.isEmpty {
             object["images"] = .array(images.map(\.json))
-        }
-        if let followUpMode {
-            object["followUpMode"] = .string(followUpMode)
         }
         if let editMessageId {
             object["editMessageId"] = .string(editMessageId)

@@ -80,7 +80,8 @@ final class LocalizationTests: XCTestCase {
         XCTAssertEqual(L10n.Turn.processing("12s"), "Processed 12s")
         XCTAssertEqual(L10n.Turn.completed("4m"), "Completed 4m")
         XCTAssertEqual(SpeedMode.fast.title, "Fast")
-        XCTAssertEqual(FollowUpMode.steer.title, "Steer")
+        XCTAssertEqual(L10n.Settings.followUpDesktop, "Use Desktop Setting")
+        XCTAssertEqual(L10n.Entry.steering, "Steering")
         XCTAssertEqual(LiveActivityMode.perComputer.title, "One card per computer")
 
         L10n.configure(language: .simplifiedChinese)
@@ -94,7 +95,8 @@ final class LocalizationTests: XCTestCase {
         XCTAssertEqual(L10n.Turn.processing("12s"), "已处理 12s")
         XCTAssertEqual(L10n.Turn.completed("4m"), "已完成 4m")
         XCTAssertEqual(SpeedMode.fast.title, "快速")
-        XCTAssertEqual(FollowUpMode.steer.title, "引导")
+        XCTAssertEqual(L10n.Settings.followUpDesktop, "跟随桌面端设置")
+        XCTAssertEqual(L10n.Entry.steering, "待调整方向")
         XCTAssertEqual(LiveActivityMode.perComputer.title, "每台远程电脑一张卡片")
     }
 
@@ -172,7 +174,7 @@ final class LocalizationTests: XCTestCase {
         XCTAssertTrue(englishTexts.contains("General"), "Expected English 'General', got: \(englishTexts)")
         XCTAssertTrue(englishTexts.contains("Behavior"), "Expected English 'Behavior', got: \(englishTexts)")
         XCTAssertTrue(englishTexts.contains("Task completion notifications"), "Expected English 'Task completion notifications', got: \(englishTexts)")
-        XCTAssertTrue(englishTexts.contains("Queue"), "Expected English 'Queue', got: \(englishTexts)")
+        XCTAssertTrue(englishTexts.contains(where: { $0.contains("Use Desktop Setting") }), "Expected desktop follow-up setting, got: \(englishTexts)")
         XCTAssertTrue(englishTexts.contains("One card per computer"), "Expected English 'One card per computer', got: \(englishTexts)")
         XCTAssertTrue(englishTexts.contains("English"), "Expected English 'English', got: \(englishTexts)")
 
@@ -185,7 +187,7 @@ final class LocalizationTests: XCTestCase {
         XCTAssertTrue(chineseTexts.contains("通用"), "Expected Chinese '通用', got: \(chineseTexts)")
         XCTAssertTrue(chineseTexts.contains("行为"), "Expected Chinese '行为', got: \(chineseTexts)")
         XCTAssertTrue(chineseTexts.contains("任务完成通知"), "Expected Chinese '任务完成通知', got: \(chineseTexts)")
-        XCTAssertTrue(chineseTexts.contains("排队"), "Expected Chinese '排队', got: \(chineseTexts)")
+        XCTAssertTrue(chineseTexts.contains(where: { $0.contains("跟随桌面端设置") }), "Expected desktop follow-up setting, got: \(chineseTexts)")
         XCTAssertTrue(chineseTexts.contains("每台远程电脑一张卡片"), "Expected Chinese '每台远程电脑一张卡片', got: \(chineseTexts)")
         XCTAssertTrue(chineseTexts.contains("简体中文"), "Expected Chinese '简体中文', got: \(chineseTexts)")
 
@@ -198,7 +200,7 @@ final class LocalizationTests: XCTestCase {
         XCTAssertTrue(restoredTexts.contains("General"), "Expected restored 'General', got: \(restoredTexts)")
         XCTAssertTrue(restoredTexts.contains("Behavior"), "Expected restored 'Behavior', got: \(restoredTexts)")
         XCTAssertTrue(restoredTexts.contains("Task completion notifications"), "Expected restored 'Task completion notifications', got: \(restoredTexts)")
-        XCTAssertTrue(restoredTexts.contains("Queue"), "Expected restored 'Queue', got: \(restoredTexts)")
+        XCTAssertTrue(restoredTexts.contains(where: { $0.contains("Use Desktop Setting") }), "Expected restored desktop follow-up setting, got: \(restoredTexts)")
         XCTAssertTrue(restoredTexts.contains("One card per computer"), "Expected restored 'One card per computer', got: \(restoredTexts)")
         XCTAssertTrue(restoredTexts.contains("English"), "Expected restored 'English', got: \(restoredTexts)")
     }

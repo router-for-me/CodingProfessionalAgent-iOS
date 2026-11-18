@@ -153,6 +153,73 @@ final class SystemPromptBuildStatusTests: XCTestCase {
         XCTAssertFalse(client.isBuildingSystemPrompt("sess-snap"))
     }
 
+    func testFollowUpUsesDesktopModeAndClearsPendingWhenTheSamePromptStarts() async throws {
+        let server = try PromptBuildMockServer()
+        defer { server.stop() }
+        let sessionId = "sess-follow-up"
+        server.activeRunsResult = [[
+            "sessionId": .string(sessionId), "runId": "run-1", "status": "running", "updatedAt": 1000,
+        ]]
+        server.sessionEntries = [sessionId: [[
+            "id": "original", "kind": "user", "createdAt": 800,
+            "content": [["type": "text", "text": "Original prompt"]],
+        ]]]
+
+        let client = DesktopClient(connection: DesktopConnection(
+            name: "Studio Mac", host: "127.0.0.1", port: Int(server.port), icon: .display
+        ))
+        defer { client.stop() }
+        client.start()
+        try await waitUntil("desktop settings and active run have synced") { client.hasSynced }
+
+        let model = ThreadModel(client: client, sessionId: sessionId)
+        model.activate()
+        defer { model.deactivate() }
+        try await waitUntil("initial thread snapshot") { model.entries.contains(where: { $0.id == "original" }) }
+        try await model.send("Follow up", skillReferences: [])
+
+        let request = try XCTUnwrap(server.delegateRequest)
+        XCTAssertNil(request["followUpMode"], "Only the desktop should select the execution mode")
+        let id = try XCTUnwrap(request["userEntryId"]?.stringValue)
+        XCTAssertEqual(model.entries.first(where: { $0.id == id })?.pendingStatus, "pending")
+
+        server.broadcastEvent(kind: "session:stream-event", data: [
+            "sessionId": .string(sessionId), "runId": "run-1", "event": [
+                "type": "follow-up-pending", "userEntryId": .string(id),
+                "pendingStatus": "steer", "createdAt": 1500,
+            ],
+        ])
+        try await waitUntil("desktop confirms steering mode") {
+            model.entries.contains { $0.id == id && $0.pendingStatus == "steer" }
+        }
+
+        // Persistence contains the same user row but strips the live pending flag.
+        server.sessionEntries = [sessionId: [[
+            "id": .string(id), "kind": "user", "createdAt": 1500,
+            "content": [["type": "text", "text": "Follow up"]],
+        ], [
+            "id": "saved", "kind": "user", "createdAt": 900,
+            "content": [["type": "text", "text": "Prior prompt"]],
+        ]]]
+        model.refresh()
+        try await waitUntil("refreshed history") { model.entries.contains(where: { $0.id == "saved" }) }
+        XCTAssertEqual(model.entries.first(where: { $0.id == id })?.pendingStatus, "steer")
+
+        server.broadcastEvent(kind: "session:stream-event", data: [
+            "sessionId": .string(sessionId), "runId": "run-1", "event": [
+                "type": "user-entry",
+                "entry": [
+                    "id": .string(id), "kind": "user", "createdAt": 2000,
+                    "content": [["type": "text", "text": "Follow up"]],
+                ],
+            ],
+        ])
+        try await waitUntil("the desktop activates the same prompt") {
+            model.entries.contains { $0.id == id && $0.pendingStatus == nil }
+        }
+        XCTAssertEqual(model.entries.filter { $0.id == id }.count, 1)
+    }
+
     func testRenderedThreadViewShowsAndHidesNonInteractiveBuildStatus() throws {
         let previousLanguage = LocalizationManager.shared.language
         defer {
@@ -378,6 +445,7 @@ private final class PromptBuildMockServer: @unchecked Sendable {
     private let lock = NSLock()
     private var _activeRunsResult: [JSONValue] = []
     private var _sessionEntries: [String: [JSONValue]] = [:]
+    private var _delegateRequest: JSONValue?
     private var wsConnections: [NWConnection] = []
     private(set) var port: UInt16 = 0
 
@@ -389,6 +457,10 @@ private final class PromptBuildMockServer: @unchecked Sendable {
     var sessionEntries: [String: [JSONValue]] {
         get { lock.withLock { _sessionEntries } }
         set { lock.withLock { _sessionEntries = newValue } }
+    }
+
+    var delegateRequest: JSONValue? {
+        lock.withLock { _delegateRequest }
     }
 
     func broadcastEvent(kind: String, data: JSONValue) {
@@ -524,6 +596,9 @@ private final class PromptBuildMockServer: @unchecked Sendable {
                     ]
                 case "session:listSessions":
                     result = .array([])
+                case "session:delegateRun":
+                    lock.withLock { _delegateRequest = args.first }
+                    result = .null
                 case "kvstore:get":
                     let key = args.first?.stringValue ?? ""
                     result = (key == "projects" || key == "cachedModels") ? .array([]) : .null

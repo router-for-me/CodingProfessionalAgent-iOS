@@ -200,17 +200,17 @@ enum WorkLocation: String, CaseIterable, Identifiable {
     }
 }
 
-// How a message sent while a run is active is handled by the desktop.
-enum FollowUpMode: String, CaseIterable, Identifiable {
+// The desktop confirms queue or steer; pending is the local placeholder before that confirmation.
+enum FollowUpStatus: String, Sendable {
+    case pending
     case queue
     case steer
 
-    var id: Self { self }
-
     var title: String {
         switch self {
-        case .queue: L10n.Model.followUpQueue
-        case .steer: L10n.Model.followUpSteer
+        case .pending: L10n.Entry.followUpPending
+        case .queue: L10n.Entry.queued
+        case .steer: L10n.Entry.steering
         }
     }
 }
@@ -235,7 +235,6 @@ enum LiveActivityMode: String, CaseIterable, Identifiable {
 enum PreferenceKey {
     static let collapseKeyboardAfterSend = "composer.collapseKeyboardAfterSend"
     static let showContextUsage = "composer.showContextUsage"
-    static let followUpMode = "composer.followUpMode"
     static let wrapDiffLines = "behavior.wrapDiffLines"
     static let notifyOnTurnComplete = "behavior.notifyOnTurnComplete"
     static let liveActivityMode = "behavior.liveActivityMode"

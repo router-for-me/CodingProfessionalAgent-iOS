@@ -1895,7 +1895,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "引导中"
+            "value" : "待调整方向"
           }
         }
       }
@@ -4589,6 +4589,23 @@
         }
       }
     },
+    "settings.followUpDesktop" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Use Desktop Setting"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "跟随桌面端设置"
+          }
+        }
+      }
+    },
     "settings.followUpMode" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -4601,7 +4618,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "后续消息处理方式"
+            "value" : "跟进处理方式"
           }
         }
       }

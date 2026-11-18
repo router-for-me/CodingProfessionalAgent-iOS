@@ -279,19 +279,17 @@ final class ThreadModel {
     func send(
         _ text: String,
         skillReferences: [SkillReference],
-        images: [PromptImage] = [],
-        followUpMode: FollowUpMode
+        images: [PromptImage] = []
     ) async throws {
         wasStopped = false
         let entryId = UUID().uuidString.lowercased()
         let now = Date().milliseconds
-        let running = isRunning
         let session = self.session
         upsert(ConversationEntry(
             localUserEntryId: entryId,
             text: text,
             createdAt: now,
-            pendingStatus: running ? followUpMode.rawValue : nil,
+            pendingStatus: isRunning ? FollowUpStatus.pending.rawValue : nil,
             skillReferences: skillReferences,
             images: images
         ))
@@ -306,8 +304,7 @@ final class ThreadModel {
             userEntryId: entryId,
             userEntryCreatedAt: now,
             skillReferences: skillReferences,
-            images: images,
-            followUpMode: running ? followUpMode.rawValue : nil
+            images: images
         )
         do {
             try await client.delegateRun(request)
@@ -688,11 +685,23 @@ final class ThreadModel {
             for entry in entries {
                 current[entry.id] = entry
             }
-            // Replay updates that arrived while the snapshot was in flight.
-            var merged = persisted.map { live.contains($0.id) ? (current[$0.id] ?? $0) : $0 }
-            // An authoritative snapshot drops everything else it does not contain; right after a run ends
-            // the desktop may not have persisted its last entries yet, so those are kept.
-            let keptIds = authoritative ? live : unpersistedIds.union(live)
+            let running = isRunning
+            var merged = persisted.map { stored in
+                guard let local = current[stored.id] else { return stored }
+                if live.contains(stored.id) { return local }
+                // The store strips pendingStatus. A matching desktop timestamp still represents
+                // the waiting entry; activation publishes a new timestamp and a user-entry event.
+                if running, local.createdAt == stored.createdAt,
+                   local.pendingStatus == FollowUpStatus.queue.rawValue || local.pendingStatus == FollowUpStatus.steer.rawValue {
+                    return local
+                }
+                return stored
+            }
+            let pendingIds = Set(entries.filter { $0.pendingStatus != nil }.map(\.id))
+            // Wait for a follow-up to be stored while running, but do not retain it as normal
+            // history after the desktop is idle. Preserve other live entries after a run ends.
+            let keptIds = (authoritative ? live : unpersistedIds.subtracting(pendingIds).union(live))
+                .union(running ? pendingIds : [])
             merged += entries.filter { keptIds.contains($0.id) && !persistedIds.contains($0.id) }
             entries = merged
             unpersistedIds = keptIds.subtracting(persistedIds)
@@ -798,6 +807,21 @@ final class ThreadModel {
             return
         }
         switch event["type"]?.stringValue {
+        case "follow-up-pending":
+            guard let id = event["userEntryId"]?.stringValue,
+                  let status = event["pendingStatus"]?.stringValue,
+                  status == FollowUpStatus.queue.rawValue || status == FollowUpStatus.steer.rawValue,
+                  let createdAt = event["createdAt"]?.doubleValue,
+                  var entry = entries.first(where: { $0.id == id && $0.kind == .user })
+            else { return }
+            entry.pendingStatus = status
+            entry.createdAt = createdAt
+            upsert(entry)
+        case "follow-up-removed":
+            guard let id = event["userEntryId"]?.stringValue, !id.isEmpty else { return }
+            removedEntryIds.insert(id)
+            unpersistedIds.remove(id)
+            entries.removeAll { $0.id == id && $0.kind == .user }
         case "user-entry", "assistant-start", "assistant-update", "assistant-end", "compaction-end":
             if let entry = try? event["entry"]?.decode(ConversationEntry.self) {
                 upsert(entry)
