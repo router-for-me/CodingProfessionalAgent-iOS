@@ -1852,8 +1852,14 @@ final class DesktopClient: Identifiable {
             .first ?? choices.last?.id ?? ""
     }
 
+    static let buildingSystemPromptStatus = "building-system-prompt"
+
     func isRunning(_ sessionId: String) -> Bool {
         activeRuns[sessionId] != nil
+    }
+
+    func isBuildingSystemPrompt(_ sessionId: String) -> Bool {
+        activeRuns[sessionId]?.status == Self.buildingSystemPromptStatus
     }
 
     // Models enabled in the desktop settings, in the desktop's configured order.

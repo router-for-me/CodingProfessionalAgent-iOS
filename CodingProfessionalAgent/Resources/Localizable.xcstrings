@@ -6408,6 +6408,23 @@
         }
       }
     },
+    "turn.buildingSystemPrompt" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Building enhanced system prompt"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在构建增强性系统提示词"
+          }
+        }
+      }
+    },
     "turn.collapseDetails" : {
       "extractionState" : "stale",
       "localizations" : {

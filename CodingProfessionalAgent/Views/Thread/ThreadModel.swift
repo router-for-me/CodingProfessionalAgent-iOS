@@ -143,6 +143,11 @@ final class ThreadModel {
         return client.isRunning(sessionId)
     }
 
+    // True while the desktop reports it is synthesizing an enhanced system prompt for this run.
+    var isBuildingSystemPrompt: Bool {
+        subAgent == nil && client.isBuildingSystemPrompt(sessionId)
+    }
+
     // Sub-agents launched by this conversation.
     var subAgents: [SubAgentRecord] {
         client.subAgents(parentSessionId: sessionId)

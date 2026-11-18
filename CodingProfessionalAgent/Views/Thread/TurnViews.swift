@@ -6,6 +6,8 @@ struct TurnContext {
     var subAgents: [SubAgentRecord] = []
     // Live details of running tools by normalized call id.
     var toolDetails: [String: JSONValue] = [:]
+    // True while the desktop is building an enhanced system prompt for the active turn.
+    var isBuildingSystemPrompt = false
     var openSubAgent: (SubAgentRecord) -> Void = { _ in }
     // Forks the conversation from a message (desktop `onForkMessage`); nil hides the action.
     var onFork: ((ConversationEntry) -> Void)? = nil
@@ -13,11 +15,13 @@ struct TurnContext {
     init(
         subAgents: [SubAgentRecord] = [],
         toolDetails: [String: JSONValue] = [:],
+        isBuildingSystemPrompt: Bool = false,
         onFork: ((ConversationEntry) -> Void)? = nil,
         openSubAgent: @escaping (SubAgentRecord) -> Void = { _ in }
     ) {
         self.subAgents = subAgents
         self.toolDetails = toolDetails
+        self.isBuildingSystemPrompt = isBuildingSystemPrompt
         self.onFork = onFork
         self.openSubAgent = openSubAgent
     }
@@ -58,6 +62,10 @@ struct AssistantTurnView: View {
                 } else {
                     collapsedContent(reply: reply)
                 }
+            }
+
+            if turn.isLive && context.isBuildingSystemPrompt {
+                SystemPromptBuildStatusView()
             }
 
             if status == .error {
@@ -306,6 +314,29 @@ private struct ToolActivityLine: View {
         case .skill, .read, .other:
             "doc.text"
         }
+    }
+}
+
+// Transient tool-style status row shown while the desktop builds an enhanced system prompt.
+struct SystemPromptBuildStatusView: View {
+    @Environment(\.locale) private var locale
+
+    var body: some View {
+        let _ = locale
+        HStack(spacing: 6) {
+            Image(systemName: "doc.text")
+                .font(.system(size: 13))
+                .frame(width: 18)
+                .accessibilityHidden(true)
+            Text(L10n.Turn.buildingSystemPrompt)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .modifier(Shimmer(isActive: true))
+        }
+        .font(.system(size: 15))
+        .foregroundStyle(.secondary)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("system-prompt-build-status")
     }
 }
 

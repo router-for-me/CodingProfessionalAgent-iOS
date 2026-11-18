@@ -558,6 +558,7 @@ enum L10n {
     }
 
     enum Turn {
+        static var buildingSystemPrompt: String { L10n.string("turn.buildingSystemPrompt") }
         static func processing(_ time: String) -> String { L10n.format("turn.processing", time) }
         static func interrupted(_ time: String) -> String { L10n.format("turn.interrupted", time) }
         static var interruptedBare: String { L10n.string("turn.interruptedBare") }

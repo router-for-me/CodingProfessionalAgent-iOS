@@ -213,7 +213,12 @@ private struct ThreadContent: View {
     // Sub-agent badges open the sub-agent's own run view; the fork action copies the conversation
     // up to that message and opens the copy (desktop `onForkMessage`).
     private var turnContext: TurnContext {
-        TurnContext(subAgents: model.subAgents, toolDetails: model.toolDetails, onFork: fork) { record in
+        TurnContext(
+            subAgents: model.subAgents,
+            toolDetails: model.toolDetails,
+            isBuildingSystemPrompt: model.isBuildingSystemPrompt,
+            onFork: fork
+        ) { record in
             router.push(.subAgent(
                 connectionId: client.id,
                 parentSessionId: record.parentSessionId,
@@ -442,7 +447,14 @@ private struct ThreadContent: View {
             // positions, which can leave the screen blank or keep the layout busy.
             VStack(alignment: .leading, spacing: 24) {
                 let context = turnContext
-                ForEach(ChatTurn.group(model.entries, isRunActive: model.isRunning)) { turn in
+                let turns = ChatTurn.group(model.entries, isRunActive: model.isRunning)
+                let hasLiveTurn = turns.contains {
+                    if case .assistant(let assistantTurn) = $0 {
+                        return assistantTurn.isLive
+                    }
+                    return false
+                }
+                ForEach(turns) { turn in
                     switch turn {
                     case .user(let entry):
                         if entry.id == editingEntryId {
@@ -474,6 +486,10 @@ private struct ThreadContent: View {
                     case .assistant(let assistantTurn):
                         AssistantTurnView(turn: assistantTurn, context: context, wrapLines: wrapDiffLines)
                     }
+                }
+
+                if model.isBuildingSystemPrompt && !hasLiveTurn {
+                    SystemPromptBuildStatusView()
                 }
 
                 if let error = model.lastRunError, !model.isRunning {
